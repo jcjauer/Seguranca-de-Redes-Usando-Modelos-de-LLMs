@@ -91,9 +91,6 @@ python manage.py createsuperuser
 # Acessar admin Django
 # http://127.0.0.1:8000/admin/
 
-# Limpar análises antigas
-python manage.py cleanup_old_analyses --days 30
-
 # Ver logs de desenvolvimento
 python manage.py runserver --verbosity 2
 ```
