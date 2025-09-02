@@ -1,0 +1,4 @@
+# Dependências essenciais do projeto
+django==5.1.1
+scapy==2.5.0
+ollama==0.3.1

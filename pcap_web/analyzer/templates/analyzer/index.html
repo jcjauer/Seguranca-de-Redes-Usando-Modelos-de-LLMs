@@ -1,0 +1,330 @@
+{% extends 'analyzer/base.html' %}
+
+{% block title %}Dashboard - Analisador PCAP{% endblock %}
+
+{% block page_title %}
+    <i class="fas fa-tachometer-alt"></i> Dashboard
+{% endblock %}
+
+{% block page_actions %}
+    <a href="{% url 'upload_pcap' %}" class="btn btn-primary">
+        <i class="fas fa-upload"></i> Novo Upload
+    </a>
+{% endblock %}
+
+{% block content %}
+<!-- Statistics Cards -->
+<div class="row mb-4">
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-primary shadow h-100 py-2">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">
+                            Total de Análises
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">
+                            {{ total_analyses }}
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-file-alt fa-2x text-gray-300"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-success shadow h-100 py-2">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-success text-uppercase mb-1">
+                            Concluídas
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">
+                            {{ completed_analyses }}
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-check-circle fa-2x text-gray-300"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-warning shadow h-100 py-2">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">
+                            Pendentes
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">
+                            {{ pending_analyses }}
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-clock fa-2x text-gray-300"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-info shadow h-100 py-2">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-info text-uppercase mb-1">
+                            Taxa de Sucesso
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800">
+                            {% if total_analyses > 0 %}
+                                {{ completed_analyses|floatformat:0 }}/ {{ total_analyses }} 
+                                ({% widthratio completed_analyses total_analyses 100 %}%)
+                            {% else %}
+                                0%
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-percentage fa-2x text-gray-300"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Upload Section -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header py-3">
+                <h6 class="m-0 font-weight-bold text-primary">
+                    <i class="fas fa-upload"></i> Upload Rápido
+                </h6>
+            </div>
+            <div class="card-body">
+                <form id="quick-upload-form" enctype="multipart/form-data">
+                    {% csrf_token %}
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="upload-area" id="upload-area">
+                                <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
+                                <h5>Arraste seu arquivo PCAP aqui</h5>
+                                <p class="text-muted">ou clique para selecionar</p>
+                                <input type="file" id="pcap-file" name="pcap_file" accept=".pcap,.pcapng,.cap" style="display: none;">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-group mb-3">
+                                <label for="model-select">Modelo LLM:</label>
+                                <select name="llm_model" id="model-select" class="form-control">
+                                    <option value="llama3">LLaMA 3</option>
+                                    <option value="mistral">Mistral</option>
+                                    <option value="gemma">Gemma</option>
+                                    <option value="codellama">Code Llama</option>
+                                </select>
+                            </div>
+                            <div id="file-info" style="display: none;">
+                                <div class="alert alert-info">
+                                    <strong>Arquivo selecionado:</strong>
+                                    <span id="file-name"></span>
+                                    <br>
+                                    <strong>Tamanho:</strong>
+                                    <span id="file-size"></span>
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-primary btn-lg" id="upload-btn" disabled>
+                                <i class="fas fa-upload"></i> Iniciar Análise
+                            </button>
+                            <div class="progress-container mt-3">
+                                <div class="progress">
+                                    <div class="progress-bar" role="progressbar" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Analyses -->
+<div class="row">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header py-3 d-flex justify-content-between align-items-center">
+                <h6 class="m-0 font-weight-bold text-primary">
+                    <i class="fas fa-history"></i> Análises Recentes
+                </h6>
+                <a href="{% url 'analysis_list' %}" class="btn btn-sm btn-outline-primary">
+                    Ver Todas
+                </a>
+            </div>
+            <div class="card-body">
+                {% if analyses %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Arquivo</th>
+                                    <th>Modelo</th>
+                                    <th>Status</th>
+                                    <th>Pacotes</th>
+                                    <th>Data</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for analysis in analyses %}
+                                <tr>
+                                    <td>
+                                        <i class="fas fa-file-alt text-muted"></i>
+                                        {{ analysis.original_filename }}
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-secondary">{{ analysis.llm_model }}</span>
+                                    </td>
+                                    <td>
+                                        {% if analysis.status == 'completed' %}
+                                            <span class="badge bg-success">
+                                                <i class="fas fa-check"></i> Concluída
+                                            </span>
+                                        {% elif analysis.status == 'processing' %}
+                                            <span class="badge bg-warning">
+                                                <i class="fas fa-spinner fa-spin"></i> Processando
+                                            </span>
+                                        {% elif analysis.status == 'pending' %}
+                                            <span class="badge bg-info">
+                                                <i class="fas fa-clock"></i> Pendente
+                                            </span>
+                                        {% else %}
+                                            <span class="badge bg-danger">
+                                                <i class="fas fa-exclamation-triangle"></i> Erro
+                                            </span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if analysis.packet_count %}
+                                            {{ analysis.packet_count|floatformat:0 }}
+                                        {% else %}
+                                            -
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ analysis.created_at|date:"d/m/Y H:i" }}</td>
+                                    <td>
+                                        <a href="{% url 'analysis_detail' analysis.id %}" class="btn btn-sm btn-outline-primary">
+                                            <i class="fas fa-eye"></i> Ver
+                                        </a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-inbox fa-3x text-muted mb-3"></i>
+                        <h5 class="text-muted">Nenhuma análise ainda</h5>
+                        <p class="text-muted">Faça upload do seu primeiro arquivo PCAP para começar!</p>
+                        <a href="{% url 'upload_pcap' %}" class="btn btn-primary">
+                            <i class="fas fa-upload"></i> Fazer Upload
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const uploadArea = document.getElementById('upload-area');
+    const fileInput = document.getElementById('pcap-file');
+    const uploadBtn = document.getElementById('upload-btn');
+    const fileInfo = document.getElementById('file-info');
+    const fileName = document.getElementById('file-name');
+    const fileSize = document.getElementById('file-size');
+    const form = document.getElementById('quick-upload-form');
+
+    // Click to select file
+    uploadArea.addEventListener('click', () => fileInput.click());
+
+    // Drag and drop
+    uploadArea.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        uploadArea.classList.add('dragover');
+    });
+
+    uploadArea.addEventListener('dragleave', () => {
+        uploadArea.classList.remove('dragover');
+    });
+
+    uploadArea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            fileInput.files = files;
+            handleFileSelect();
+        }
+    });
+
+    // File selection
+    fileInput.addEventListener('change', handleFileSelect);
+
+    function handleFileSelect() {
+        const file = fileInput.files[0];
+        if (file) {
+            fileName.textContent = file.name;
+            fileSize.textContent = (file.size / (1024 * 1024)).toFixed(2) + ' MB';
+            fileInfo.style.display = 'block';
+            uploadBtn.disabled = false;
+        }
+    }
+
+    // Form submission
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(form);
+        
+        // Show progress
+        uploadBtn.disabled = true;
+        uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Enviando...';
+        document.querySelector('.progress-container').style.display = 'block';
+        
+        fetch('{% url "api_upload_pcap" %}', {
+            method: 'POST',
+            body: formData,
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                window.location.href = `/analysis/${data.analysis_id}/`;
+            } else {
+                alert('Erro: ' + JSON.stringify(data.errors));
+            }
+        })
+        .catch(error => {
+            alert('Erro no upload: ' + error);
+        })
+        .finally(() => {
+            uploadBtn.disabled = false;
+            uploadBtn.innerHTML = '<i class="fas fa-upload"></i> Iniciar Análise';
+            document.querySelector('.progress-container').style.display = 'none';
+        });
+    });
+});
+</script>
+{% endblock %}
