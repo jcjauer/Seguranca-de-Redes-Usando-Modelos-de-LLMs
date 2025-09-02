@@ -92,13 +92,13 @@ def processar_pcap(arquivo_pcap):
                     "dns_query": None,
                     "arp_op": pkt[ARP].op,  # Operação ARP (request/reply)
                 }
-            
+
             # Tentar interpretar pacotes Raw como possíveis dados IP
             elif Raw in pkt and len(pkt) > 20:  # Tamanho mínimo de um cabeçalho IP
                 try:
                     # Tentar interpretar dados Raw como IP
                     raw_data = bytes(pkt[Raw].load)
-                    
+
                     # Verificar se os primeiros bytes parecem um cabeçalho IP
                     if len(raw_data) >= 20:
                         version = (raw_data[0] >> 4) & 0xF
@@ -118,7 +118,7 @@ def processar_pcap(arquivo_pcap):
                                 "dns_query": None,
                                 "raw_interpreted": True,
                             }
-                            
+
                             # Verificar se há TCP/UDP dentro dos dados Raw
                             if TCP in ip_pkt:
                                 info["tcp_flags"] = str(ip_pkt[TCP].flags)
@@ -127,7 +127,7 @@ def processar_pcap(arquivo_pcap):
                             elif UDP in ip_pkt:
                                 info["src_port"] = ip_pkt[UDP].sport
                                 info["dst_port"] = ip_pkt[UDP].dport
-                        
+
                         elif version == 6:  # IPv6
                             ipv6_pkt = IPv6(raw_data)
                             info = {
@@ -152,7 +152,9 @@ def processar_pcap(arquivo_pcap):
                         "protocol": "Raw",
                         "ip_version": "Raw",
                         "length": len(pkt),
-                        "entropy": round(calcular_entropia(raw_data), 4) if raw_data else 0,
+                        "entropy": (
+                            round(calcular_entropia(raw_data), 4) if raw_data else 0
+                        ),
                         "src_port": None,
                         "dst_port": None,
                         "tcp_flags": None,
@@ -179,7 +181,9 @@ def processar_pcap(arquivo_pcap):
                         if DNS in pkt:
                             try:
                                 if pkt[DNS].qd:
-                                    info["dns_query"] = pkt[DNS].qd.qname.decode("utf-8")
+                                    info["dns_query"] = pkt[DNS].qd.qname.decode(
+                                        "utf-8"
+                                    )
                             except:
                                 pass
 

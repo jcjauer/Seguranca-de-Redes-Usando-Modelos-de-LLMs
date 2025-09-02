@@ -8,7 +8,7 @@
 
 {% block page_actions %}
     <div class="btn-group">
-        <a href="{% url 'upload_pcap' %}" class="btn btn-success">
+        <a href="{% url 'index' %}" class="btn btn-success">
             <i class="fas fa-upload"></i> Nova Análise
         </a>
         <a href="{% url 'analysis_list' %}" class="btn btn-secondary">
@@ -163,7 +163,7 @@
             <p><strong>Mensagem de erro:</strong></p>
             <pre class="mb-0">{{ analysis.error_message }}</pre>
             <hr>
-            <a href="{% url 'upload_pcap' %}" class="btn btn-primary">
+            <a href="{% url 'index' %}" class="btn btn-primary">
                 <i class="fas fa-upload"></i> Tentar Novamente
             </a>
         </div>
@@ -232,7 +232,7 @@
                 <div class="row">
                     <div class="col-md-4">
                         <div class="d-grid">
-                            <a href="{% url 'upload_pcap' %}" class="btn btn-success">
+                            <a href="{% url 'index' %}" class="btn btn-success">
                                 <i class="fas fa-upload"></i> Nova Análise
                             </a>
                         </div>

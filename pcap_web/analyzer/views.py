@@ -17,19 +17,7 @@ from .pcap_analyzer import analyze_pcap_with_llm, get_available_models
 
 
 def index(request):
-    """Página principal com lista de análises"""
-    analyses = PCAPAnalysis.objects.all()[:10]  # Últimas 10 análises
-    context = {
-        "analyses": analyses,
-        "total_analyses": PCAPAnalysis.objects.count(),
-        "completed_analyses": PCAPAnalysis.objects.filter(status="completed").count(),
-        "pending_analyses": PCAPAnalysis.objects.filter(status="pending").count(),
-    }
-    return render(request, "analyzer/index.html", context)
-
-
-def upload_pcap(request):
-    """View para upload de arquivos PCAP"""
+    """Página principal com upload e lista de análises"""
     if request.method == "POST":
         form = PCAPUploadForm(request.POST, request.FILES)
         if form.is_valid():
@@ -56,11 +44,16 @@ def upload_pcap(request):
     else:
         form = PCAPUploadForm()
 
+    analyses = PCAPAnalysis.objects.all()[:10]  # Últimas 10 análises
     context = {
         "form": form,
         "available_models": get_available_models(),
+        "analyses": analyses,
+        "total_analyses": PCAPAnalysis.objects.count(),
+        "completed_analyses": PCAPAnalysis.objects.filter(status="completed").count(),
+        "pending_analyses": PCAPAnalysis.objects.filter(status="pending").count(),
     }
-    return render(request, "analyzer/upload.html", context)
+    return render(request, "analyzer/index.html", context)
 
 
 def analysis_detail(request, analysis_id):
@@ -142,41 +135,3 @@ def process_pcap_analysis(analysis_id):
 
             logger = logging.getLogger("analyzer")
             logger.error(f"Failed to retrieve analysis {analysis_id}: {e}")
-
-
-# API Views
-@csrf_exempt
-def api_upload_pcap(request):
-    """API endpoint para upload via AJAX"""
-    if request.method != "POST":
-        return JsonResponse({"error": "Método não permitido"}, status=405)
-
-    try:
-        form = PCAPUploadForm(request.POST, request.FILES)
-        if form.is_valid():
-            analysis = PCAPAnalysis(
-                original_filename=request.FILES["pcap_file"].name,
-                pcap_file=request.FILES["pcap_file"],
-                file_size=request.FILES["pcap_file"].size,
-                llm_model=form.cleaned_data["llm_model"],
-                status="pending",
-            )
-            analysis.save()
-
-            # Iniciar análise
-            thread = threading.Thread(target=process_pcap_analysis, args=(analysis.id,))
-            thread.daemon = True
-            thread.start()
-
-            return JsonResponse(
-                {
-                    "success": True,
-                    "analysis_id": analysis.id,
-                    "message": "Upload realizado com sucesso!",
-                }
-            )
-        else:
-            return JsonResponse({"success": False, "errors": form.errors}, status=400)
-
-    except Exception as e:
-        return JsonResponse({"success": False, "error": str(e)}, status=500)

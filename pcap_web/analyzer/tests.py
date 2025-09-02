@@ -107,11 +107,11 @@ class ViewsTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Dashboard")
 
-    def test_upload_view_get(self):
-        """Testa a página de upload (GET)"""
-        response = self.client.get(reverse("upload_pcap"))
+    def test_index_view_get(self):
+        """Testa a página principal (GET)"""
+        response = self.client.get(reverse("index"))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Upload de Arquivo PCAP")
+        self.assertContains(response, "Dashboard")
 
     def test_analysis_detail_view(self):
         """Testa a página de detalhes da análise"""
@@ -153,7 +153,7 @@ class IntegrationTest(TestCase):
         )
 
         response = self.client.post(
-            reverse("upload_pcap"), {"pcap_file": uploaded_file, "llm_model": "llama3"}
+            reverse("index"), {"pcap_file": uploaded_file, "llm_model": "llama3"}
         )
 
         # Deve redirecionar após upload bem-sucedido
