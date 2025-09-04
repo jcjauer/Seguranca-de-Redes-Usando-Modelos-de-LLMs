@@ -1,0 +1,325 @@
+{% extends 'analyzer/base.html' %}
+
+{% block title %}Análise: {{ analysis.original_filename }}{% endblock %}
+
+{% block page_title %}
+    <i class="fas fa-file-alt"></i> {{ analysis.original_filename }}
+{% endblock %}
+
+{% block page_actions %}
+    <div class="btn-group">
+        <a href="{% url 'index' %}" class="btn btn-success">
+            <i class="fas fa-upload"></i> Nova Análise
+        </a>
+        <a href="{% url 'analysis_list' %}" class="btn btn-secondary">
+            <i class="fas fa-list"></i> Todas as Análises
+        </a>
+        <form method="post" action="{% url 'delete_analysis' analysis.id %}" style="display: inline;" 
+              onsubmit="return confirm('Tem certeza que deseja deletar esta análise?');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger">
+                <i class="fas fa-trash"></i> Deletar
+            </button>
+        </form>
+    </div>
+{% endblock %}
+
+{% block content %}
+<!-- Analysis Header -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h5><i class="fas fa-info-circle"></i> Informações do Arquivo</h5>
+                        <table class="table table-borderless">
+                            <tr>
+                                <td><strong>Nome:</strong></td>
+                                <td>{{ analysis.original_filename }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Tamanho:</strong></td>
+                                <td>{{ analysis.file_size_mb }} MB</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Upload:</strong></td>
+                                <td>{{ analysis.created_at|date:"d/m/Y H:i:s" }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Modelo LLM:</strong></td>
+                                <td><span class="badge bg-secondary">{{ analysis.llm_model }}</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                    <div class="col-md-6">
+                        <h5><i class="fas fa-chart-bar"></i> Status da Análise</h5>
+                        <table class="table table-borderless">
+                            <tr>
+                                <td><strong>Status:</strong></td>
+                                <td>
+                                    {% if analysis.status == 'completed' %}
+                                        <span class="badge bg-success">
+                                            <i class="fas fa-check"></i> Concluída
+                                        </span>
+                                    {% elif analysis.status == 'processing' %}
+                                        <span class="badge bg-warning">
+                                            <i class="fas fa-spinner fa-spin"></i> Processando
+                                        </span>
+                                    {% elif analysis.status == 'pending' %}
+                                        <span class="badge bg-info">
+                                            <i class="fas fa-clock"></i> Pendente
+                                        </span>
+                                    {% else %}
+                                        <span class="badge bg-danger">
+                                            <i class="fas fa-exclamation-triangle"></i> Erro
+                                        </span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Pacotes:</strong></td>
+                                <td>
+                                    {% if analysis.packet_count %}
+                                        {{ analysis.packet_count|floatformat:0 }}
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Duração:</strong></td>
+                                <td>
+                                    {% if analysis.analysis_duration %}
+                                        {{ analysis.analysis_duration }} segundos
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Anomalias:</strong></td>
+                                <td>
+                                    {% if analysis.has_anomalies %}
+                                        <span class="badge bg-danger">
+                                            <i class="fas fa-exclamation-triangle"></i> Detectadas
+                                        </span>
+                                    {% elif analysis.is_completed %}
+                                        <span class="badge bg-success">
+                                            <i class="fas fa-shield-alt"></i> Nenhuma
+                                        </span>
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Analysis Status for Active Analysis -->
+{% if analysis.status == 'processing' or analysis.status == 'pending' %}
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card shadow border-warning">
+            <div class="card-body text-center">
+                <div class="spinner-border text-warning mb-3" role="status">
+                    <span class="visually-hidden">Carregando...</span>
+                </div>
+                <h5>Análise em Andamento</h5>
+                <p class="text-muted">
+                    {% if analysis.status == 'pending' %}
+                        Sua análise está na fila de processamento...
+                    {% else %}
+                        O modelo de IA está analisando seu arquivo PCAP...
+                    {% endif %}
+                </p>
+                <div class="progress">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                         role="progressbar" style="width: 100%"></div>
+                </div>
+                <small class="text-muted mt-2 d-block">
+                    Esta página será atualizada automaticamente quando a análise for concluída.
+                </small>
+                <button class="btn btn-outline-primary mt-3" onclick="location.reload()">
+                    <i class="fas fa-sync-alt"></i> Atualizar Status
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Error Display -->
+{% if analysis.status == 'error' %}
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="alert alert-danger">
+            <h5><i class="fas fa-exclamation-triangle"></i> Erro na Análise</h5>
+            <p><strong>Mensagem de erro:</strong></p>
+            <pre class="mb-0">{{ analysis.error_message }}</pre>
+            <hr>
+            <a href="{% url 'index' %}" class="btn btn-primary">
+                <i class="fas fa-upload"></i> Tentar Novamente
+            </a>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Analysis Results -->
+{% if analysis.status == 'completed' and analysis.analysis_result %}
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-search"></i> Resultado da Análise
+                    </h5>
+                    <div>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard()">
+                            <i class="fas fa-copy"></i> Copiar
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" onclick="downloadReport()">
+                            <i class="fas fa-download"></i> Download
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="result-text" id="analysis-result">{{ analysis.analysis_result }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Summary if available -->
+{% if analysis.analysis_summary %}
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-clipboard-list"></i> Resumo Executivo
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info">
+                    {{ analysis.analysis_summary }}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endif %}
+
+<!-- Action Panel -->
+<div class="row">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-tools"></i> Ações
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="d-grid">
+                            <a href="{% url 'index' %}" class="btn btn-success">
+                                <i class="fas fa-upload"></i> Nova Análise
+                            </a>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-grid">
+                            <a href="{% url 'analysis_list' %}" class="btn btn-secondary">
+                                <i class="fas fa-list"></i> Ver Todas
+                            </a>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-grid">
+                            <button class="btn btn-info" onclick="shareAnalysis()">
+                                <i class="fas fa-share-alt"></i> Compartilhar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Auto-refresh for pending/processing analyses
+{% if analysis.status == 'processing' or analysis.status == 'pending' %}
+setInterval(function() {
+    fetch('{% url "analysis_status" analysis.id %}')
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'completed' || data.status === 'error') {
+                location.reload();
+            }
+        })
+        .catch(error => console.log('Error checking status:', error));
+}, 5000); // Check every 5 seconds
+{% endif %}
+
+function copyToClipboard() {
+    const text = document.getElementById('analysis-result').textContent;
+    navigator.clipboard.writeText(text).then(function() {
+        // Show success message
+        const btn = event.target.closest('button');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<i class="fas fa-check"></i> Copiado!';
+        btn.classList.remove('btn-outline-secondary');
+        btn.classList.add('btn-success');
+        
+        setTimeout(() => {
+            btn.innerHTML = originalText;
+            btn.classList.remove('btn-success');
+            btn.classList.add('btn-outline-secondary');
+        }, 2000);
+    });
+}
+
+function downloadReport() {
+    const content = document.getElementById('analysis-result').textContent;
+    const filename = `analise_${new Date().toISOString().slice(0,10)}_{{ analysis.original_filename }}.txt`;
+    
+    const element = document.createElement('a');
+    element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(content));
+    element.setAttribute('download', filename);
+    element.style.display = 'none';
+    
+    document.body.appendChild(element);
+    element.click();
+    document.body.removeChild(element);
+}
+
+function shareAnalysis() {
+    const url = window.location.href;
+    if (navigator.share) {
+        navigator.share({
+            title: 'Análise PCAP - {{ analysis.original_filename }}',
+            text: 'Confira esta análise de segurança de rede',
+            url: url
+        });
+    } else {
+        // Fallback: copy URL to clipboard
+        navigator.clipboard.writeText(url).then(function() {
+            alert('URL copiada para a área de transferência!');
+        });
+    }
+}
+</script>
+{% endblock %}
