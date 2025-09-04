@@ -1,6 +1,7 @@
 # analyzer/forms.py
 from django import forms
 from .models import PCAPAnalysis
+from .utils import get_ollama_models   # 🔹 agora importado daqui
 
 
 class PCAPUploadForm(forms.Form):
@@ -20,15 +21,21 @@ class PCAPUploadForm(forms.Form):
 
     llm_model = forms.ChoiceField(
         label="Modelo LLM",
-        choices=[
-            ("llama3", "LLaMA 3"),
-            ("mistral", "Mistral"),
-            ("gemma", "Gemma"),
-            ("codellama", "Code Llama"),
-        ],
-        initial="llama3",
-        widget=forms.Select(attrs={"class": "form-control", "id": "model-select"}),
+        choices=[],  # será preenchido no __init__
+        widget=forms.Select(
+            attrs={"class": "form-control", "id": "model-select"}),
     )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        models = get_ollama_models()
+        if models:
+            self.fields['llm_model'].choices = models
+            # primeiro modelo como padrão
+            self.fields['llm_model'].initial = models[0][0]
+        else:
+            self.fields['llm_model'].choices = [
+                ("", "Nenhum modelo encontrado")]
 
     def clean_pcap_file(self):
         """Validação do arquivo PCAP"""
@@ -58,13 +65,10 @@ class PCAPUploadForm(forms.Form):
     def clean_llm_model(self):
         """Validação do modelo LLM"""
         model = self.cleaned_data["llm_model"]
-
-        # Lista de modelos válidos (pode ser expandida)
-        valid_models = ["llama3", "mistral", "gemma", "codellama"]
-
+        valid_models = [m[0] for m in get_ollama_models()]
         if model not in valid_models:
-            raise forms.ValidationError("Modelo LLM inválido")
-
+            raise forms.ValidationError(
+                "Modelo LLM inválido ou não disponível no Ollama")
         return model
 
 
@@ -86,23 +90,19 @@ class AnalysisFilterForm(forms.Form):
     )
 
     model = forms.ChoiceField(
-        choices=[
-            ("", "Todos os modelos"),
-            ("llama3", "LLaMA 3"),
-            ("mistral", "Mistral"),
-            ("gemma", "Gemma"),
-            ("codellama", "Code Llama"),
-        ],
+        choices=[("", "Todos os modelos")] + get_ollama_models(),
         required=False,
         widget=forms.Select(attrs={"class": "form-control"}),
     )
 
     date_from = forms.DateField(
         required=False,
-        widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+        widget=forms.DateInput(
+            attrs={"class": "form-control", "type": "date"}),
     )
 
     date_to = forms.DateField(
         required=False,
-        widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+        widget=forms.DateInput(
+            attrs={"class": "form-control", "type": "date"}),
     )
