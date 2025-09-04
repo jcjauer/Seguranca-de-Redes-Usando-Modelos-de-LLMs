@@ -17,6 +17,10 @@
     <div class="col-12">
         <div class="card shadow">
             <div class="card-body">
+                
+                {# Placeholder para as notificações dinâmicas #}
+                <div id="notification-placeholder"></div>
+
                 {% if analyses %}
                     <div class="table-responsive">
                         <table class="table table-hover">
@@ -33,7 +37,8 @@
                             </thead>
                             <tbody>
                                 {% for analysis in analyses %}
-                                <tr>
+                                {# Adicionado um ID único para cada linha da tabela #}
+                                <tr id="analysis-row-{{ analysis.id }}">
                                     <td>
                                         <i class="fas fa-file-alt text-muted"></i>
                                         {{ analysis.original_filename }}
@@ -83,9 +88,10 @@
                                                class="btn btn-outline-primary" title="Ver Detalhes">
                                                 <i class="fas fa-eye"></i>
                                             </a>
-                                            <form method="post" action="{% url 'delete_analysis' analysis.id %}" 
-                                                  style="display: inline;"
-                                                  onsubmit="return confirm('Deletar esta análise?');">
+                                            
+                                            {# Formulário modificado para ser controlado por JavaScript #}
+                                            <form class="delete-form" method="post" action="{% url 'delete_analysis' analysis.id %}" 
+                                                  style="display: inline;" data-analysis-id="{{ analysis.id }}">
                                                 {% csrf_token %}
                                                 <button type="submit" class="btn btn-outline-danger" title="Deletar">
                                                     <i class="fas fa-trash"></i>
@@ -112,4 +118,74 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Adiciona um listener para todos os formulários de deleção
+    const deleteForms = document.querySelectorAll('.delete-form');
+    
+    deleteForms.forEach(form => {
+        form.addEventListener('submit', function(event) {
+            // Previne o envio padrão do formulário, que recarrega a página
+            event.preventDefault();
+
+            // Exibe a caixa de confirmação
+            if (confirm('Deletar esta análise?')) {
+                const analysisId = form.dataset.analysisId;
+                const url = form.action;
+                const csrfToken = form.querySelector('[name=csrfmiddlewaretoken]').value;
+
+                // Envia a requisição de deleção em segundo plano (AJAX)
+                fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': csrfToken,
+                        'Content-Type': 'application/json'
+                    }
+                })
+                .then(response => {
+                    if (response.ok) {
+                        // Se a resposta for bem-sucedida, remove a linha da tabela
+                        const rowToRemove = document.getElementById('analysis-row-' + analysisId);
+                        if (rowToRemove) {
+                            rowToRemove.remove();
+                        }
+                        // Mostra a notificação de sucesso
+                        showNotification('Arquivo deletado com sucesso!', 'success');
+                    } else {
+                        // Se houver um erro, mostra a notificação de falha
+                        showNotification('Falha ao deletar o arquivo.', 'danger');
+                    }
+                })
+                .catch(error => {
+                    // Em caso de erro de rede, etc.
+                    console.error('Erro:', error);
+                    showNotification('Falha ao deletar o arquivo.', 'danger');
+                });
+            }
+        });
+    });
+
+    // Função para criar e exibir as notificações
+    function showNotification(message, type) {
+        const placeholder = document.getElementById('notification-placeholder');
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = `
+            <div class="alert alert-${type} alert-dismissible fade show" role="alert">
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        `;
+        placeholder.append(wrapper);
+
+        // Remove a notificação após 5 segundos
+        setTimeout(() => {
+            const bsAlert = new bootstrap.Alert(wrapper.firstChild);
+            bsAlert.close();
+        }, 5000);
+    }
+});
+</script>
 {% endblock %}
