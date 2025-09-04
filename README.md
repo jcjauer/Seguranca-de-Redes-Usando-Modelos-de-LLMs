@@ -49,6 +49,7 @@ source venv/bin/activate
 
 ### 3. Instale as dependências:
 ```bash
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
@@ -60,6 +61,30 @@ ollama pull llama3
 ollama pull mistral
 ollama pull gemma
 ```
+
+### 5. Preparação e Execução do Projeto Django
+
+**1. Migrações do banco de dados**
+    - Certifique-se de que o app `analyzer` possui um arquivo de migração inicial. Se não existir, crie com:
+       ```powershell
+       python pcap_web/manage.py makemigrations analyzer
+       ```
+    - Em seguida, aplique todas as migrações:
+       ```powershell
+       python pcap_web/manage.py migrate
+       ```
+
+**2. Criação da pasta de arquivos estáticos**
+    - Crie a pasta `static` dentro de `pcap_web` (caso não exista):
+       ```powershell
+       mkdir pcap_web\static
+       ```
+
+**3. Execução do servidor web Django**
+    - Para iniciar a interface web:
+       ```powershell
+       python pcap_web/manage.py runserver
+       ```
 
 ## 🎮 Como Usar
 
