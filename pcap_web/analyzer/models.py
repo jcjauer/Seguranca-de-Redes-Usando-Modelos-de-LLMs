@@ -19,6 +19,11 @@ class PCAPAnalysis(models.Model):
 
     # Configurações da análise
     llm_model = models.CharField(max_length=100, default="llama3")
+    # Optional endpoint override for the LLM service
+    llm_host = models.CharField(
+        max_length=255, default="127.0.0.1", help_text="Host/IP do serviço LLM")
+    llm_port = models.IntegerField(
+        default=11434, help_text="Porta do serviço LLM")
 
     # Resultados da análise
     packet_count = models.IntegerField(null=True, blank=True)
@@ -37,7 +42,8 @@ class PCAPAnalysis(models.Model):
         ("completed", "Concluída"),
         ("error", "Erro"),
     ]
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default="pending")
     error_message = models.TextField(null=True, blank=True)
 
     class Meta:

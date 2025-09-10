@@ -27,12 +27,17 @@ def index(request):
                 pcap_file=request.FILES["pcap_file"],
                 file_size=request.FILES["pcap_file"].size,
                 llm_model=form.cleaned_data["llm_model"],
+                llm_host=form.cleaned_data.get('llm_host', None) or getattr(settings, 'DEFAULT_LLM_HOST', '127.0.0.1'),
+                llm_port=form.cleaned_data.get('llm_port', None) or getattr(settings, 'DEFAULT_LLM_PORT', 11434),
                 status="pending",
             )
             analysis.save()
 
             # Iniciar análise em background
-            thread = threading.Thread(target=process_pcap_analysis, args=(analysis.id,))
+            thread = threading.Thread(
+                target=process_pcap_analysis,
+                args=(analysis.id, analysis.llm_host, analysis.llm_port),
+            )
             thread.daemon = True
             thread.start()
 
@@ -101,7 +106,7 @@ def delete_analysis(request, analysis_id):
     return redirect("index")
 
 
-def process_pcap_analysis(analysis_id):
+def process_pcap_analysis(analysis_id, host=None, port=None):
     """Processa a análise PCAP em background"""
     analysis = None
     try:
@@ -111,8 +116,10 @@ def process_pcap_analysis(analysis_id):
 
         start_time = time.time()
 
-        # Realizar análise
-        result = analyze_pcap_with_llm(analysis.pcap_file.path, analysis.llm_model)
+        # Realizar análise (passando host/port se fornecidos)
+        result = analyze_pcap_with_llm(
+            analysis.pcap_file.path, analysis.llm_model, host=host, port=port
+        )
 
         end_time = time.time()
 

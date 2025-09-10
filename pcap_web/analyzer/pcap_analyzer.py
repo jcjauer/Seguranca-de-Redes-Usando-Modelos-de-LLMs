@@ -94,7 +94,8 @@ def processar_pcap(arquivo_pcap):
                 }
 
             # Tentar interpretar pacotes Raw como possíveis dados IP
-            elif Raw in pkt and len(pkt) > 20:  # Tamanho mínimo de um cabeçalho IP
+            # Tamanho mínimo de um cabeçalho IP
+            elif Raw in pkt and len(pkt) > 20:
                 try:
                     # Tentar interpretar dados Raw como IP
                     raw_data = bytes(pkt[Raw].load)
@@ -153,7 +154,8 @@ def processar_pcap(arquivo_pcap):
                         "ip_version": "Raw",
                         "length": len(pkt),
                         "entropy": (
-                            round(calcular_entropia(raw_data), 4) if raw_data else 0
+                            round(calcular_entropia(raw_data),
+                                  4) if raw_data else 0
                         ),
                         "src_port": None,
                         "dst_port": None,
@@ -202,7 +204,8 @@ def processar_pcap(arquivo_pcap):
             tipos_pacotes = []
             for pkt in pacotes[:10]:  # Analisar apenas os primeiros 10 pacotes
                 if Ether in pkt:
-                    tipos_pacotes.append(f"Ethernet (tipo: {hex(pkt[Ether].type)})")
+                    tipos_pacotes.append(
+                        f"Ethernet (tipo: {hex(pkt[Ether].type)})")
                 elif Raw in pkt:
                     tipos_pacotes.append("Raw Data")
                 else:
@@ -274,7 +277,8 @@ PROTOCOLOS DETECTADOS:
 """
 
     for proto, count in sorted(protocolos.items(), key=lambda x: x[1], reverse=True):
-        proto_name = {6: "TCP", 17: "UDP", 1: "ICMP"}.get(proto, f"Protocolo {proto}")
+        proto_name = {6: "TCP", 17: "UDP", 1: "ICMP"}.get(
+            proto, f"Protocolo {proto}")
         resumo += f"- {proto_name}: {count} pacotes\n"
 
     resumo += "\nPORTAS MAIS ACESSADAS:\n"
@@ -344,7 +348,8 @@ def detectar_padroes_suspeitos(dados):
 
     for ip, destinos in ips_origem_stats.items():
         if len(destinos) > 10:  # Conectou a mais de 10 IPs diferentes
-            suspeitos.append(f"IP {ip} conectou a {len(destinos)} destinos diferentes")
+            suspeitos.append(
+                f"IP {ip} conectou a {len(destinos)} destinos diferentes")
 
     return suspeitos
 
@@ -376,7 +381,7 @@ def get_port_service(porta):
     return servicos.get(porta, "Desconhecido")
 
 
-def analisar_com_llm(dados_formatados, modelo="llama3"):
+def analisar_com_llm(dados_formatados, modelo="llama3", host=None, port=None):
     """Envia dados para análise pelo LLM"""
     prompt = f"""
 Você é um especialista em segurança cibernética e análise de tráfego de rede. 
@@ -397,6 +402,15 @@ de rede possa entender e agir.
 """
 
     try:
+        # If a host/port is provided, set a small env fallback so the ollama client
+        # or subprocess-based client may pick it up. This is best-effort: depending
+        # on the installed ollama package, you may need to configure the client
+        # differently. The values are set as hints for the environment.
+        if host:
+            os.environ.setdefault('OLLAMA_HOST', host)
+        if port:
+            os.environ.setdefault('OLLAMA_PORT', str(port))
+
         resposta = ollama.chat(
             model=modelo, messages=[{"role": "user", "content": prompt}]
         )
@@ -418,7 +432,7 @@ def get_available_models():
         return ["llama3", "mistral", "gemma", "codellama"]
 
 
-def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3"):
+def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None):
     """Função principal para análise completa de PCAP com LLM"""
     try:
         # Processar PCAP
@@ -430,8 +444,10 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3"):
         # Formatar dados para análise
         dados_formatados = formatar_dados_para_analise(dados_pacotes)
 
-        # Analisar com LLM
-        analise_llm = analisar_com_llm(dados_formatados, modelo)
+        # Analisar com LLM (passando host/port se fornecidos)
+        analise_llm = analisar_com_llm(
+            dados_formatados, modelo, host=host, port=port
+        )
 
         # Criar resumo
         resumo = f"Analisados {len(dados_pacotes)} pacotes com modelo {modelo}"

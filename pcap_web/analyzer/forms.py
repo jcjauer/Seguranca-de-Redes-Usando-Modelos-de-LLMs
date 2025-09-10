@@ -2,6 +2,7 @@
 from django import forms
 from .models import PCAPAnalysis
 from .utils import get_ollama_models   # 🔹 agora importado daqui
+from django.conf import settings
 
 
 class PCAPUploadForm(forms.Form):
@@ -26,6 +27,21 @@ class PCAPUploadForm(forms.Form):
             attrs={"class": "form-control", "id": "model-select"}),
     )
 
+    llm_host = forms.CharField(
+        label="Host LLM",
+        required=False,
+        widget=forms.TextInput(
+            attrs={"class": "form-control", "placeholder": "127.0.0.1"}),
+    )
+
+    llm_port = forms.IntegerField(
+        label="Porta LLM",
+        required=False,
+        initial=getattr(settings, 'DEFAULT_LLM_PORT', 11434),
+        widget=forms.NumberInput(
+            attrs={"class": "form-control", "placeholder": "11434"}),
+    )
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         models = get_ollama_models()
@@ -36,6 +52,11 @@ class PCAPUploadForm(forms.Form):
         else:
             self.fields['llm_model'].choices = [
                 ("", "Nenhum modelo encontrado")]
+        # set default host/port from settings if available
+        self.fields['llm_host'].initial = getattr(
+            settings, 'DEFAULT_LLM_HOST', '127.0.0.1')
+        self.fields['llm_port'].initial = getattr(
+            settings, 'DEFAULT_LLM_PORT', 11434)
 
     def clean_pcap_file(self):
         """Validação do arquivo PCAP"""

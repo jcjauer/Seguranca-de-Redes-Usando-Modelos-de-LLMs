@@ -28,6 +28,11 @@
             box-sizing: border-box;
         }
 
+        /* CSS variable for sidebar width to make layout responsive when collapsed */
+        :root {
+            --sidebar-width: 250px;
+        }
+
         /* Sidebar link base - full width and compact spacing */
         .sidebar .nav-pills {
             gap: 0.15rem;
@@ -116,18 +121,39 @@
                 position: fixed;
                 top: 0;
                 left: 0;
-                width: 250px; /* fixed sidebar width */
+                width: var(--sidebar-width); /* use CSS variable for responsive behavior */
                 z-index: 1040;
                 overflow-y: auto;
             }
             .main-content {
-                margin-left: 250px; /* same as sidebar width */
+                margin-left: var(--sidebar-width); /* same as sidebar width via variable */
             }
             /* ensure offcanvas / mobile elements unaffected */
             .offcanvas.offcanvas-start {
                 z-index: 1050;
             }
         }
+
+        /* Collapsed sidebar state - update CSS variable so main content responds */
+        @media (min-width: 768px) {
+            body.sidebar-collapsed {
+                --sidebar-width: 85px;
+            }
+            body.sidebar-collapsed .label-text,
+            body.sidebar-collapsed .brand span {
+                display: none !important;
+            }
+            body.sidebar-collapsed .nav-link {
+                justify-content: center;
+                padding-left: 0.5rem;
+                padding-right: 0.5rem;
+            }
+            /* small transition for smooth resize */
+            .sidebar, .main-content {
+                transition: width .18s ease, margin-left .18s ease;
+            }
+        }
+
         .status-badge {
             font-size: 0.75rem;
         }
@@ -265,10 +291,17 @@
             <!-- Desktop sidebar -->
             <aside class="col-md-2 d-none d-md-block sidebar">
                 <div class="px-3">
-                    <a class="brand d-flex align-items-center mb-3" href="{% url 'index' %}">
-                        <i class="fas fa-shield-alt me-2"></i>
-                        <span>Analisador PCAP com IA</span>
-                    </a>
+                    <div class="d-flex align-items-center mb-3">
+                        <a class="brand d-flex align-items-center" href="{% url 'index' %}">
+                            <i class="fas fa-shield-alt me-2"></i>
+                            <span>Analisador PCAP com IA</span>
+                        </a>
+                        <div class="ms-auto">
+                            <button id="toggle-sidebar" class="btn btn-sm btn-outline-light" title="Recolher/Expandir barra">
+                                <i id="toggle-icon" class="fas fa-angle-double-left"></i>
+                            </button>
+                        </div>
+                    </div>
                     <hr style="border-color: rgba(255,255,255,0.08);">
                     <ul class="nav nav-pills flex-column">
                         {% if request.resolver_match.url_name != 'index' %}
@@ -357,6 +390,48 @@
         }
     </script>
     
+    <script>
+        // Sidebar collapse toggle with persistence
+        (function() {
+            const STORAGE_KEY = 'pcap_sidebar_collapsed_v1';
+            function setCollapsed(collapsed) {
+                if (collapsed) {
+                    document.body.classList.add('sidebar-collapsed');
+                } else {
+                    document.body.classList.remove('sidebar-collapsed');
+                }
+                // update icon direction
+                const icon = document.getElementById('toggle-icon');
+                if (icon) {
+                    icon.classList.toggle('fa-angle-double-right', collapsed);
+                    icon.classList.toggle('fa-angle-double-left', !collapsed);
+                }
+                try { localStorage.setItem(STORAGE_KEY, collapsed ? '1' : '0'); } catch (e) { /* ignore if storage blocked */ }
+            }
+
+            function init() {
+                const btn = document.getElementById('toggle-sidebar');
+                if (!btn) return;
+                // Initialize from localStorage
+                let collapsed = false;
+                try { collapsed = localStorage.getItem(STORAGE_KEY) === '1'; } catch (e) { collapsed = false; }
+                setCollapsed(collapsed);
+
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const isCollapsed = document.body.classList.contains('sidebar-collapsed');
+                    setCollapsed(!isCollapsed);
+                });
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+        })();
+    </script>
+
     {% block extra_js %}{% endblock %}
 </body>
 </html>
