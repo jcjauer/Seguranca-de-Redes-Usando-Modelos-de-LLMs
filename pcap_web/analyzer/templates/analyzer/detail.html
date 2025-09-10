@@ -24,6 +24,44 @@
     </div>
 {% endblock %}
 
+{% block extra_css %}
+<style>
+/* Responsive layout that adapts automatically when --sidebar-width changes */
+@media (min-width: 768px) {
+    /* Make the inner container span the remaining viewport width (depends on --sidebar-width set in base) */
+    .main-content .container-fluid {
+        max-width: none;
+        width: calc(100vw - var(--sidebar-width) - 3rem);
+        padding-left: 1rem; /* small horizontal margin */
+        padding-right: 1rem; /* small horizontal margin */
+        box-sizing: border-box;
+        transition: width .18s ease;
+    }
+
+    /* Let columns be flexible so cards wrap/use available width nicely */
+    .main-content .row > [class*='col-'] {
+        flex: 1 1 240px; /* grow and wrap as needed */
+        min-width: 220px;
+    }
+
+    /* Make cards stretch to fill column height for consistent look */
+    .main-content .card {
+        height: 100%;
+    }
+
+    /* Upload area should occupy full column width and scale its padding */
+    .main-content .upload-area {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 36px;
+    }
+
+    /* Slightly tighten spacing on statistic cards to use space efficiently */
+    .main-content .card .card-body { padding: .8rem; }
+}
+</style>
+{% endblock %}
+
 {% block content %}
 <!-- Analysis Header -->
 <div class="row mb-4">

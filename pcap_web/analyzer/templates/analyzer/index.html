@@ -163,6 +163,16 @@
                                 <label for="id_llm_model">{{ form.llm_model.label }}:</label>
                                 {{ form.llm_model }}
                             </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-8">
+                                    <label for="id_llm_host">{{ form.llm_host.label }}:</label>
+                                    {{ form.llm_host }}
+                                </div>
+                                <div class="col-4">
+                                    <label for="id_llm_port">{{ form.llm_port.label }}:</label>
+                                    {{ form.llm_port }}
+                                </div>
+                            </div>
                             <div id="file-info" style="display: none;">
                                 <div class="alert alert-info">
                                     <strong>Arquivo selecionado:</strong>
