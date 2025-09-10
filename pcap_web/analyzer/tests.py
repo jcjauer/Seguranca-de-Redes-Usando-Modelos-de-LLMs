@@ -48,8 +48,12 @@ class PCAPAnalysisModelTest(TestCase):
 class PCAPUploadFormTest(TestCase):
     """Testes para o formulário de upload"""
 
-    def test_valid_form(self):
+    @patch('analyzer.forms.get_ollama_models')
+    def test_valid_form(self, mock_get_models):
         """Testa formulário válido"""
+        # Mock dos modelos Ollama disponíveis
+        mock_get_models.return_value = [('llama3', 'llama3'), ('mistral', 'mistral')]
+        
         # Simula arquivo PCAP válido
         pcap_content = b"fake pcap content"
         uploaded_file = SimpleUploadedFile(
@@ -60,8 +64,12 @@ class PCAPUploadFormTest(TestCase):
         form = PCAPUploadForm(form_data, {"pcap_file": uploaded_file})
         self.assertTrue(form.is_valid())
 
-    def test_invalid_file_extension(self):
+    @patch('analyzer.forms.get_ollama_models')
+    def test_invalid_file_extension(self, mock_get_models):
         """Testa arquivo com extensão inválida"""
+        # Mock dos modelos Ollama disponíveis
+        mock_get_models.return_value = [('llama3', 'llama3'), ('mistral', 'mistral')]
+        
         txt_content = b"not a pcap file"
         uploaded_file = SimpleUploadedFile(
             "test.txt", txt_content, content_type="text/plain"
@@ -72,8 +80,12 @@ class PCAPUploadFormTest(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("pcap_file", form.errors)
 
-    def test_file_too_large(self):
+    @patch('analyzer.forms.get_ollama_models')
+    def test_file_too_large(self, mock_get_models):
         """Testa arquivo muito grande"""
+        # Mock dos modelos Ollama disponíveis
+        mock_get_models.return_value = [('llama3', 'llama3'), ('mistral', 'mistral')]
+        
         # Simula arquivo de 60MB (acima do limite de 50MB)
         large_content = b"x" * (60 * 1024 * 1024)
         uploaded_file = SimpleUploadedFile(
@@ -113,6 +125,17 @@ class ViewsTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Dashboard")
 
+    def test_greeting_api(self):
+        """Testa o endpoint de saudação 'oi'"""
+        response = self.client.get(reverse("greeting"))
+        self.assertEqual(response.status_code, 200)
+        
+        data = response.json()
+        self.assertIn("mensagem", data)
+        self.assertIn("Oi!", data["mensagem"])
+        self.assertEqual(data["saudacao"], "oi")
+        self.assertEqual(data["idioma"], "português")
+
     def test_analysis_detail_view(self):
         """Testa a página de detalhes da análise"""
         response = self.client.get(reverse("analysis_detail", args=[self.analysis.id]))
@@ -138,9 +161,13 @@ class ViewsTest(TestCase):
 class IntegrationTest(TestCase):
     """Testes de integração"""
 
+    @patch('analyzer.forms.get_ollama_models')
     @patch("analyzer.views.threading.Thread")
-    def test_full_upload_workflow(self, mock_thread):
+    def test_full_upload_workflow(self, mock_thread, mock_get_models):
         """Testa o fluxo completo de upload sem executar threading"""
+        # Mock dos modelos Ollama disponíveis
+        mock_get_models.return_value = [('llama3', 'llama3'), ('mistral', 'mistral')]
+        
         # Mock do thread para não executar em background durante teste
         mock_thread.return_value.start.return_value = None
 

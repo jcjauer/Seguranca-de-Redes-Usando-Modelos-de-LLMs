@@ -135,3 +135,19 @@ def process_pcap_analysis(analysis_id):
 
             logger = logging.getLogger("analyzer")
             logger.error(f"Failed to retrieve analysis {analysis_id}: {e}")
+
+
+def greeting_api(request):
+    """Endpoint simples para saudar em português - resposta ao 'oi'"""
+    return JsonResponse({
+        "mensagem": "Oi! Olá, seja bem-vindo(a) ao sistema de análise de segurança de redes!",
+        "descricao": "Este é um analisador PCAP que utiliza modelos de LLM para detectar anomalias",
+        "saudacao": "oi",
+        "idioma": "português",
+        "recursos": [
+            "Upload de arquivos PCAP",
+            "Análise com IA (LLM)",
+            "Detecção de anomalias de segurança",
+            "Relatórios detalhados"
+        ]
+    })

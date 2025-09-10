@@ -4,6 +4,7 @@ from . import views
 
 urlpatterns = [
     path("", views.index, name="index"),
+    path("oi/", views.greeting_api, name="greeting"),  # Resposta ao 'oi'
     path("analysis/<int:analysis_id>/", views.analysis_detail, name="analysis_detail"),
     path(
         "analysis/<int:analysis_id>/status/",
