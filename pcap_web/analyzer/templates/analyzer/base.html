@@ -9,14 +9,124 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     
     <style>
+        /* Sidebar styles */
         .sidebar {
             min-height: 100vh;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #667eea 0%, #420f74 100%);
             color: white;
+            padding-top: 1rem;
+            display: flex;
+            flex-direction: column;
         }
+        @media (min-width: 768px) {
+            .sidebar {
+                bottom: 0;
+            }
+        }
+        /* Normalize box sizing inside sidebar to avoid unexpected width calculations */
+        .sidebar, .sidebar * {
+            box-sizing: border-box;
+        }
+
+        /* Sidebar link base - full width and compact spacing */
+        .sidebar .nav-pills {
+            gap: 0.15rem;
+            padding: 0; /* remove default UL padding */
+            margin: 0;
+            list-style: none;
+            width: 100%;
+        }
+
+        .sidebar .nav-pills .nav-item {
+            width: 100%;
+        }
+
+        .sidebar .nav-pills .nav-link {
+            display: flex;
+            align-items: center;
+            width: 100%;
+            padding: .55rem .75rem; /* slightly tighter */
+            margin: 0; /* ensure full-width use */
+            border-radius: .5rem;
+            color: rgba(255,255,255,0.95);
+            text-decoration: none;
+            background: rgba(255,255,255,0.02); /* subtle persistent highlight */
+            transition: background-color .12s ease, color .12s ease;
+        }
+
+        /* Icon fixed width so label fills remaining space */
+        .sidebar .nav-pills .nav-link .fa {
+            width: 28px;
+            text-align: center;
+            font-size: 1rem;
+            opacity: .95;
+            flex: 0 0 28px;
+        }
+
+        /* Label uses remaining width */
+        .sidebar .nav-pills .nav-link span.label-text {
+            margin-left: .5rem;
+            flex-grow: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Hover and focus - only change background and color (no shifting) */
+        .sidebar .nav-pills .nav-link:hover,
+        .sidebar .nav-pills .nav-link:focus {
+            background: rgba(255,255,255,0.08);
+            color: #fff;
+        }
+
+        /* Active state - prominent but not shifting layout */
+        .sidebar .nav-pills .nav-link.active,
+        .sidebar .nav-pills .nav-link[aria-current="page"] {
+            background: rgba(255,255,255,0.12);
+            color: #fff;
+            font-weight: 600;
+            border-left: 4px solid rgba(255,255,255,0.22);
+            padding-left: calc(.55rem - 4px); /* compensate visual left border without increasing width */
+        }
+        .sidebar .brand {
+            color: #fff;
+            font-weight: 700;
+            font-size: 1.05rem;
+            text-decoration: none;
+        }
+
+        /* Ensure inner content stacks and allows mt-auto to work */
+        .sidebar > .px-3 {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            flex: 1 1 auto; /* allow it to grow inside fixed sidebar */
+        }
+
+        /* Main content adjusted for sidebar */
         .main-content {
             min-height: 100vh;
             background-color: #f8f9fa;
+            padding-left: 1.5rem;
+            padding-right: 1.5rem;
+        }
+        /* Make sidebar fixed on desktop and push main content */
+        @media (min-width: 768px) {
+            .sidebar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 250px; /* fixed sidebar width */
+                z-index: 1040;
+                overflow-y: auto;
+            }
+            .main-content {
+                margin-left: 250px; /* same as sidebar width */
+            }
+            /* ensure offcanvas / mobile elements unaffected */
+            .offcanvas.offcanvas-start {
+                z-index: 1050;
+            }
         }
         .status-badge {
             font-size: 0.75rem;
@@ -63,57 +173,133 @@
         .progress-container {
             display: none;
         }
+
+    /* end of sidebar styles */
+
+        /* Ensure Admin link (outside .nav-pills) uses same visual style and spacing */
+        .sidebar .mt-auto {
+            padding-bottom: 1rem; /* space from bottom */
+        }
+
+        .sidebar .mt-auto .nav-link {
+            display: flex;
+            align-items: center;
+            width: 100%;
+            padding: .55rem .75rem;
+            margin: .18rem 0;
+            border-radius: .5rem;
+            color: rgba(255,255,255,0.95);
+            text-decoration: none;
+            background: rgba(255,255,255,0.02);
+        }
+
+        .sidebar .mt-auto .nav-link .fa {
+            width: 28px;
+            text-align: center;
+            flex: 0 0 28px;
+        }
+
+        .sidebar .mt-auto .nav-link span.label-text {
+            margin-left: .5rem;
+            flex-grow: 1;
+        }
+
+        .sidebar .mt-auto .nav-link:hover,
+        .sidebar .mt-auto .nav-link:focus {
+            background: rgba(255,255,255,0.08);
+            color: #fff;
+        }
     </style>
     
     {% block extra_css %}{% endblock %}
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+    <!-- Small-screen topbar with offcanvas toggle -->
+    <nav class="navbar navbar-dark d-md-none" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
         <div class="container-fluid">
-            <a class="navbar-brand" href="{% url 'index' %}">
-                <i class="fas fa-shield-alt"></i>
-                Analisador PCAP com IA
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
+            <button class="btn btn-outline-light" type="button" data-bs-toggle="offcanvas" data-bs-target="#offcanvasSidebar" aria-controls="offcanvasSidebar">
+                <i class="fas fa-bars"></i>
             </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav me-auto">
-
-                    {# --- IMPLEMENTAÇÃO DA LÓGICA CONDICIONAL --- #}
-
-                    {# Só exibe o link "Upload PCAP" se a página atual NÃO for a 'index' #}
-                    {% if request.resolver_match.url_name != 'index' %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'index' %}">
-                            <i class="fas fa-upload"></i> Upload PCAP
-                        </a>
-                    </li>
-                    {% endif %}
-
-                    {# Só exibe o link "Todas as Análises" se a página atual NÃO for a 'analysis_list' #}
-                    {% if request.resolver_match.url_name != 'analysis_list' %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'analysis_list' %}">
-                            <i class="fas fa-list"></i> Todas as Análises
-                        </a>
-                    </li>
-                    {% endif %}
-                </ul>
-                <ul class="navbar-nav">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/admin/">
-                            <i class="fas fa-cog"></i> Admin
-                        </a>
-                    </li>
-                </ul>
-            </div>
+            <a class="navbar-brand ms-2" href="{% url 'index' %}">
+                <i class="fas fa-shield-alt"></i>
+                Analisador PCAP
+            </a>
         </div>
     </nav>
 
+    <!-- Offcanvas sidebar for mobile (brand, items, spacer, admin at bottom) -->
+    <div class="offcanvas offcanvas-start d-md-none" tabindex="-1" id="offcanvasSidebar" aria-labelledby="offcanvasSidebarLabel">
+        <div class="offcanvas-header" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff;">
+            <h5 class="offcanvas-title" id="offcanvasSidebarLabel"><i class="fas fa-shield-alt"></i> Analisador PCAP</h5>
+            <button type="button" class="btn-close btn-close-white text-reset" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+        </div>
+        <div class="offcanvas-body d-flex flex-column p-2">
+            <div class="mb-2">
+                {% if request.resolver_match.url_name != 'index' %}
+                <a href="{% url 'index' %}" class="d-flex align-items-center btn btn-light w-100 mb-1">
+                    <i class="fas fa-upload"></i>
+                    <span class="label-text ms-2">Upload PCAP</span>
+                </a>
+                {% endif %}
+                {% if request.resolver_match.url_name != 'analysis_list' %}
+                <a href="{% url 'analysis_list' %}" class="d-flex align-items-center btn btn-light w-100 mb-1">
+                    <i class="fas fa-list"></i>
+                    <span class="label-text ms-2">Todas as Análises</span>
+                </a>
+                {% endif %}
+            </div>
+
+            <div class="flex-grow-1"></div>
+
+            <div>
+                <a href="/admin/" class="d-flex align-items-center btn btn-light w-100">
+                    <i class="fas fa-cog"></i>
+                    <span class="label-text ms-2">Admin</span>
+                </a>
+            </div>
+        </div>
+    </div>
+
     <div class="container-fluid">
         <div class="row">
-            <main class="col-12 main-content">
+            <!-- Desktop sidebar -->
+            <aside class="col-md-2 d-none d-md-block sidebar">
+                <div class="px-3">
+                    <a class="brand d-flex align-items-center mb-3" href="{% url 'index' %}">
+                        <i class="fas fa-shield-alt me-2"></i>
+                        <span>Analisador PCAP com IA</span>
+                    </a>
+                    <hr style="border-color: rgba(255,255,255,0.08);">
+                    <ul class="nav nav-pills flex-column">
+                        {% if request.resolver_match.url_name != 'index' %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'index' %}">
+                                <i class="fas fa-upload"></i>
+                                <span class="label-text">Upload PCAP</span>
+                            </a>
+                        </li>
+                        {% endif %}
+                        {% if request.resolver_match.url_name != 'analysis_list' %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'analysis_list' %}">
+                                <i class="fas fa-list"></i>
+                                <span class="label-text">Todas as Análises</span>
+                            </a>
+                        </li>
+                        {% endif %}
+                    </ul>
+                    <div class="flex-grow-1"></div>
+                    <div class="mt-auto">
+                        <hr style="border-color: rgba(255,255,255,0.08);">
+                        <a href="/admin/" class="nav-link">
+                            <i class="fas fa-cog"></i>
+                            <span class="label-text">Admin</span>
+                        </a>
+                    </div>
+                </div>
+            </aside>
+
+            <main class="col-12 col-md-10 main-content">
                 <div class="container-fluid py-4">
                     {% if messages %}
                         {% for message in messages %}
