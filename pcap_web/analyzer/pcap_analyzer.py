@@ -19,6 +19,8 @@ except ImportError as e:
     print(f"Erro ao importar dependências: {e}")
     print("Certifique-se de que scapy e ollama estão instalados")
 
+from .utils import get_ollama_models as get_ollama_models_subprocess
+
 
 def calcular_entropia(data):
     """Calcula a entropia de dados binários"""
@@ -424,12 +426,75 @@ def get_available_models():
     try:
         models_response = ollama.list()
         models = []
-        for model in models_response["models"]:
-            name = model.get("name", model.get("model", "unknown"))
+        # Support different return shapes: dict with 'models' key or direct list
+        if isinstance(models_response, dict) and "models" in models_response:
+            iterable = models_response["models"]
+        elif isinstance(models_response, list):
+            iterable = models_response
+        else:
+            iterable = []
+
+        for model in iterable:
+            if isinstance(model, dict):
+                name = model.get("name", model.get("model", "unknown"))
+            else:
+                # model may be a plain string
+                name = str(model)
             models.append(name)
-        return models if models else ["llama3"]
+
+        if models:
+            return models
+        # fallback to subprocess parser if Python API returned empty
+        return get_ollama_models_subprocess()
     except Exception:
-        return ["llama3", "mistral", "gemma", "codellama"]
+        # on error, return empty list to indicate none available
+        # fallback to subprocess-based listing which matches CLI output
+        return get_ollama_models_subprocess()
+
+
+def get_ollama_status(host=None, port=None):
+    """Verifica se o Ollama está acessível e retorna um resumo simples.
+
+    Retorna um dicionário com chaves: ok (bool), models (int, opcional), error (str, opcional)
+    """
+    try:
+        # aplicar host/port como fallback de ambiente se fornecidos
+        if host:
+            os.environ.setdefault('OLLAMA_HOST', host)
+        if port:
+            os.environ.setdefault('OLLAMA_PORT', str(port))
+
+        try:
+            resp = ollama.list()
+        except Exception:
+            resp = None
+        # normalize response to a list of models
+        if resp:
+            if isinstance(resp, dict) and 'models' in resp:
+                models = resp['models'] or []
+            elif isinstance(resp, list):
+                models = resp
+            else:
+                models = []
+
+            # count entries; if entries are dicts try to extract name
+            count = 0
+            for m in models:
+                if m:
+                    count += 1
+
+            # if we couldn't find models via the Python client, fallback to subprocess parser
+            if count == 0:
+                parsed = get_ollama_models_subprocess()
+                return {"ok": True, "models": len(parsed)}
+
+            return {"ok": True, "models": count}
+        else:
+            # fallback to subprocess parser which reads CLI output
+            parsed = get_ollama_models_subprocess()
+            return {"ok": True, "models": len(parsed)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None):

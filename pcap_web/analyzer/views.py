@@ -13,7 +13,7 @@ import threading
 
 from .models import PCAPAnalysis
 from .forms import PCAPUploadForm
-from .pcap_analyzer import analyze_pcap_with_llm, get_available_models
+from .pcap_analyzer import analyze_pcap_with_llm, get_available_models, get_ollama_status
 
 
 def index(request):
@@ -27,8 +27,10 @@ def index(request):
                 pcap_file=request.FILES["pcap_file"],
                 file_size=request.FILES["pcap_file"].size,
                 llm_model=form.cleaned_data["llm_model"],
-                llm_host=form.cleaned_data.get('llm_host', None) or getattr(settings, 'DEFAULT_LLM_HOST', '127.0.0.1'),
-                llm_port=form.cleaned_data.get('llm_port', None) or getattr(settings, 'DEFAULT_LLM_PORT', 11434),
+                llm_host=form.cleaned_data.get('llm_host', None) or getattr(
+                    settings, 'DEFAULT_LLM_HOST', '127.0.0.1'),
+                llm_port=form.cleaned_data.get('llm_port', None) or getattr(
+                    settings, 'DEFAULT_LLM_PORT', 11434),
                 status="pending",
             )
             analysis.save()
@@ -53,6 +55,7 @@ def index(request):
     context = {
         "form": form,
         "available_models": get_available_models(),
+        "ollama_status": get_ollama_status(),
         "analyses": analyses,
         "total_analyses": PCAPAnalysis.objects.count(),
         "completed_analyses": PCAPAnalysis.objects.filter(status="completed").count(),

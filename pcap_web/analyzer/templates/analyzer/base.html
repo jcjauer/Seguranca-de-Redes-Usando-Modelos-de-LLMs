@@ -14,13 +14,15 @@
             min-height: 100vh;
             background: linear-gradient(135deg, #667eea 0%, #420f74 100%);
             color: white;
-            padding-top: 1rem;
+            padding-top: 2rem;
             display: flex;
             flex-direction: column;
+            margin: -0.5rem;
         }
         @media (min-width: 768px) {
             .sidebar {
                 bottom: 0;
+                margin: -0.5rem;
             }
         }
         /* Normalize box sizing inside sidebar to avoid unexpected width calculations */
@@ -30,12 +32,16 @@
 
         /* CSS variable for sidebar width to make layout responsive when collapsed */
         :root {
-            --sidebar-width: 250px;
+            --sidebar-width: 240px;
+            /* right sidebar removed; keep variable at 0 for backwards compatibility */
+            --sidebar-right-width: 0px;
+            /* topbar height default (desktop will override) */
+            --topbar-height: 0px;
         }
 
         /* Sidebar link base - full width and compact spacing */
         .sidebar .nav-pills {
-            gap: 0.15rem;
+            gap: 1rem;
             padding: 0; /* remove default UL padding */
             margin: 0;
             list-style: none;
@@ -44,14 +50,16 @@
 
         .sidebar .nav-pills .nav-item {
             width: 100%;
+            padding: 0; /* normalize spacing */
+            margin: 0;
         }
 
         .sidebar .nav-pills .nav-link {
             display: flex;
             align-items: center;
             width: 100%;
-            padding: .55rem .75rem; /* slightly tighter */
-            margin: 0; /* ensure full-width use */
+            padding: .5rem 1rem;
+            margin: 0;
             border-radius: .5rem;
             color: rgba(255,255,255,0.95);
             text-decoration: none;
@@ -66,6 +74,7 @@
             font-size: 1rem;
             opacity: .95;
             flex: 0 0 28px;
+            margin: -0.5rem; /* ensure full-width use */
         }
 
         /* Label uses remaining width */
@@ -92,12 +101,14 @@
             font-weight: 600;
             border-left: 4px solid rgba(255,255,255,0.22);
             padding-left: calc(.55rem - 4px); /* compensate visual left border without increasing width */
+            margin: -0.5rem; /* ensure full-width use */
         }
         .sidebar .brand {
             color: #fff;
             font-weight: 700;
             font-size: 1.05rem;
             text-decoration: none;
+            margin: -0.5rem; /* ensure full-width use */
         }
 
         /* Ensure inner content stacks and allows mt-auto to work */
@@ -117,6 +128,9 @@
         }
         /* Make sidebar fixed on desktop and push main content */
         @media (min-width: 768px) {
+            /* desktop topbar height */
+            :root { --topbar-height: 56px; }
+
             .sidebar {
                 position: fixed;
                 top: 0;
@@ -124,10 +138,18 @@
                 width: var(--sidebar-width); /* use CSS variable for responsive behavior */
                 z-index: 1040;
                 overflow-y: auto;
+                height: calc(100vh - var(--topbar-height));
             }
             .main-content {
                 margin-left: var(--sidebar-width); /* same as sidebar width via variable */
+                margin-right: 0; /* right sidebar removed */
             }
+
+            /* offset main content from fixed topbar only (keep sidebar positioning intact) */
+            main.col-12.col-md-10.main-content {
+                padding-top: var(--topbar-height);
+            }
+
             /* ensure offcanvas / mobile elements unaffected */
             .offcanvas.offcanvas-start {
                 z-index: 1050;
@@ -147,10 +169,11 @@
                 justify-content: center;
                 padding-left: 0.5rem;
                 padding-right: 0.5rem;
+                margin: -0.5rem; /* ensure full-width use */
             }
             /* small transition for smooth resize */
             .sidebar, .main-content {
-                transition: width .18s ease, margin-left .18s ease;
+                transition: width .18s ease, margin-left .18s ease, margin-right .18s ease;
             }
         }
 
@@ -204,7 +227,7 @@
 
         /* Ensure Admin link (outside .nav-pills) uses same visual style and spacing */
         .sidebar .mt-auto {
-            padding-bottom: 1rem; /* space from bottom */
+            padding-bottom: 1.5rem; /* space from bottom (increased to move Admin up) */
         }
 
         .sidebar .mt-auto .nav-link {
@@ -212,7 +235,7 @@
             align-items: center;
             width: 100%;
             padding: .55rem .75rem;
-            margin: .18rem 0;
+            margin: -0.5rem;
             border-radius: .5rem;
             color: rgba(255,255,255,0.95);
             text-decoration: none;
@@ -223,6 +246,7 @@
             width: 28px;
             text-align: center;
             flex: 0 0 28px;
+            margin: -0.5rem; /* ensure full-width use */
         }
 
         .sidebar .mt-auto .nav-link span.label-text {
@@ -240,15 +264,25 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body>
+    <!-- Fixed topbar for desktop (centralized) -->
+    <nav class="navbar navbar-light bg-white shadow-sm fixed-top d-none d-md-flex">
+        <div class="container-fluid d-flex justify-content-center align-items-center">
+            <a class="navbar-brand d-flex align-items-center" href="{% url 'index' %}">
+                <i class="fas fa-shield-alt me-2"></i>
+                Analisador PCAP com IA
+            </a>
+        </div>
+    </nav>
+
     <!-- Small-screen topbar with offcanvas toggle -->
     <nav class="navbar navbar-dark d-md-none" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
         <div class="container-fluid">
             <button class="btn btn-outline-light" type="button" data-bs-toggle="offcanvas" data-bs-target="#offcanvasSidebar" aria-controls="offcanvasSidebar">
                 <i class="fas fa-bars"></i>
             </button>
-            <a class="navbar-brand ms-2" href="{% url 'index' %}">
-                <i class="fas fa-shield-alt"></i>
-                Analisador PCAP
+            <a class="navbar-brand d-flex align-items-center" href="{% url 'index' %}">
+                <i class="fas fa-shield-alt me-2"></i>
+                Seguranca de Redes Usando Modelos de LLMs
             </a>
         </div>
     </nav>
@@ -286,16 +320,14 @@
         </div>
     </div>
 
+    <!-- Right offcanvas removed -->
+
     <div class="container-fluid">
         <div class="row">
             <!-- Desktop sidebar -->
             <aside class="col-md-2 d-none d-md-block sidebar">
                 <div class="px-3">
                     <div class="d-flex align-items-center mb-3">
-                        <a class="brand d-flex align-items-center" href="{% url 'index' %}">
-                            <i class="fas fa-shield-alt me-2"></i>
-                            <span>Analisador PCAP com IA</span>
-                        </a>
                         <div class="ms-auto">
                             <button id="toggle-sidebar" class="btn btn-sm btn-outline-light" title="Recolher/Expandir barra">
                                 <i id="toggle-icon" class="fas fa-angle-double-left"></i>
@@ -324,13 +356,19 @@
                     <div class="flex-grow-1"></div>
                     <div class="mt-auto">
                         <hr style="border-color: rgba(255,255,255,0.08);">
-                        <a href="/admin/" class="nav-link">
-                            <i class="fas fa-cog"></i>
-                            <span class="label-text">Admin</span>
-                        </a>
+                        <ul class="nav nav-pills flex-column">
+                            <li class="nav-item">
+                                <a class="nav-link" href="/admin/">
+                                    <i class="fas fa-cog"></i>
+                                    <span class="label-text">Admin</span>
+                                </a>
+                            </li>
+                        </ul>
                     </div>
                 </div>
             </aside>
+
+            <!-- Right sidebar removed -->
 
             <main class="col-12 col-md-10 main-content">
                 <div class="container-fluid py-4">
@@ -431,6 +469,8 @@
             }
         })();
     </script>
+
+    <!-- Right sidebar JS removed -->
 
     {% block extra_js %}{% endblock %}
 </body>

@@ -7,7 +7,17 @@
 {% endblock %}
 
 {% block page_actions %}
-
+    {% if ollama_status %}
+        {% if ollama_status.ok %}
+            <span class="badge bg-success">
+                <i class="fas fa-link"></i> Ollama: {{ ollama_status.models }} modelos
+            </span>
+        {% else %}
+            <span class="badge bg-danger" title="{{ ollama_status.error }}">
+                <i class="fas fa-unlink"></i> Ollama: offline
+            </span>
+        {% endif %}
+    {% endif %}
 {% endblock %}
 
 {% block extra_css %}
