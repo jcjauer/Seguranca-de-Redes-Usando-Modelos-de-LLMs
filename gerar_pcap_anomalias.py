@@ -229,10 +229,5 @@ if __name__ == "__main__":
         print(f"\n📁 Arquivo criado: {arquivo_gerado}")
         print(f"📏 Tamanho: {tamanho} bytes")
         print(f"📍 Localização: {os.path.abspath(arquivo_gerado)}")
-
-        print(f"\n🔍 Para analisar, execute:")
-        print(f"   python pcap_llama_cli.py")
-        print(f"   ou use a interface gráfica:")
-        print(f"   python pcap_analyzer_gui.py")
     else:
         print("❌ Erro ao criar arquivo!")
