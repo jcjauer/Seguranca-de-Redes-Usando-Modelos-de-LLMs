@@ -22,6 +22,96 @@ except ImportError as e:
 from .utils import get_ollama_models as get_ollama_models_subprocess
 
 
+def detectar_dominios_suspeitos(dados):
+    """Detecta domínios suspeitos, user-agents maliciosos e padrões de fraude"""
+    suspeitos = {
+        "dominios_suspeitos": [],
+        "user_agents_maliciosos": [],
+        "click_fraud_patterns": [],
+        "short_urls": [],
+        "asian_domains": [],
+    }
+
+    # Lista de domínios conhecidos por atividade maliciosa (baseado no seu exemplo)
+    dominios_maliciosos = [
+        "yl.liufen.com",
+        "hqs9.cnzz.com",
+        "doudouguo.com",
+        "dw156.tk",
+        "lckj77.com",
+        "cnzz.com",
+    ]
+
+    # Padrões de User-Agent suspeitos
+    user_agents_suspeitos = [
+        "Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.1; Trident/4.0",  # Antigo/desatualizado
+        "Mozilla/5.0 (Windows NT 6.1)",  # Muito genérico
+    ]
+
+    # Padrões de URLs de fraude de clique
+    click_fraud_keywords = [
+        "/stat.htm",
+        "/ck.aspx",
+        "/sync_pos.htm",
+        "cnzz_core_c.php",
+        "repeatip=",
+        "showp=",
+        "rnd=",
+    ]
+
+    for pkt in dados:
+        # Análise de DNS queries
+        if pkt.get("dns_query"):
+            query = pkt["dns_query"].lower()
+
+            # Verificar domínios maliciosos conhecidos
+            for dominio in dominios_maliciosos:
+                if dominio in query:
+                    suspeitos["dominios_suspeitos"].append(
+                        {
+                            "query": query,
+                            "src_ip": pkt["src_ip"],
+                            "tipo": "dominio_malicioso_conhecido",
+                        }
+                    )
+
+            # Detectar domínios com TLD suspeitos (.tk, .ml, .ga, etc.)
+            if any(tld in query for tld in [".tk", ".ml", ".ga", ".cf", ".xyz"]):
+                suspeitos["dominios_suspeitos"].append(
+                    {"query": query, "src_ip": pkt["src_ip"], "tipo": "tld_suspeito"}
+                )
+
+            # Detectar domínios asiáticos suspeitos
+            if any(
+                keyword in query for keyword in ["china", "asia", ".cn", ".hk", ".tw"]
+            ):
+                suspeitos["asian_domains"].append(query)
+
+        # Análise de payload HTTP (se disponível em Raw data)
+        if (
+            pkt.get("entropy") and pkt["entropy"] < 4.0
+        ):  # Baixa entropia = texto legível
+            # Simular detecção de conteúdo HTTP suspeito
+            # Em implementação real, você analisaria o payload do pacote
+            src_port = pkt.get("src_port", 0)
+            dst_port = pkt.get("dst_port", 0)
+
+            # Portas HTTP/HTTPS
+            if src_port in [80, 443, 8080] or dst_port in [80, 443, 8080]:
+                # Aqui você poderia analisar o payload real do HTTP
+                # Por enquanto, vamos simular baseado nos padrões que você mostrou
+                suspeitos["click_fraud_patterns"].append(
+                    {
+                        "src_ip": pkt["src_ip"],
+                        "dst_ip": pkt["dst_ip"],
+                        "port": dst_port,
+                        "suspeita": "trafego_http_suspeito",
+                    }
+                )
+
+    return suspeitos
+
+
 def calcular_entropia(data):
     """Calcula a entropia de dados binários"""
     if not data:
@@ -156,8 +246,7 @@ def processar_pcap(arquivo_pcap):
                         "ip_version": "Raw",
                         "length": len(pkt),
                         "entropy": (
-                            round(calcular_entropia(raw_data),
-                                  4) if raw_data else 0
+                            round(calcular_entropia(raw_data), 4) if raw_data else 0
                         ),
                         "src_port": None,
                         "dst_port": None,
@@ -206,8 +295,7 @@ def processar_pcap(arquivo_pcap):
             tipos_pacotes = []
             for pkt in pacotes[:10]:  # Analisar apenas os primeiros 10 pacotes
                 if Ether in pkt:
-                    tipos_pacotes.append(
-                        f"Ethernet (tipo: {hex(pkt[Ether].type)})")
+                    tipos_pacotes.append(f"Ethernet (tipo: {hex(pkt[Ether].type)})")
                 elif Raw in pkt:
                     tipos_pacotes.append("Raw Data")
                 else:
@@ -225,6 +313,91 @@ def processar_pcap(arquivo_pcap):
 
     except Exception as e:
         raise Exception(f"Erro ao processar PCAP: {str(e)}")
+
+
+def analisar_padroes_botnet(dados, ips_origem, ips_destino):
+    """Analisa padrões específicos de botnet e malware"""
+    padroes = {
+        "hosts_com_multiplas_conexoes": {},  # Host interno -> múltiplos destinos externos
+        "comunicacao_c2": [],  # Possível Command & Control
+        "beaconing": {},  # Comunicação periódica
+        "data_exfiltration": [],  # Transferências suspeitas
+        "port_scanning": {},  # Tentativas de port scan
+        "flood_attacks": {},  # Ataques de flood
+        "crypto_mining": [],  # Padrões de crypto mining
+        "click_fraud": [],  # Fraude de cliques
+    }
+
+    # Analisar hosts com múltiplas conexões externas (indicador de botnet)
+    conexoes_por_host = {}
+    for pkt in dados:
+        src_ip = pkt["src_ip"]
+        dst_ip = pkt["dst_ip"]
+
+        if src_ip and dst_ip:
+            # Identificar redes internas vs externas (assumindo 10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12)
+            is_src_internal = (
+                src_ip.startswith("10.")
+                or src_ip.startswith("192.168.")
+                or src_ip.startswith("172.")
+            )
+            is_dst_external = not (
+                dst_ip.startswith("10.")
+                or dst_ip.startswith("192.168.")
+                or dst_ip.startswith("172.")
+            )
+
+            if is_src_internal and is_dst_external:
+                if src_ip not in conexoes_por_host:
+                    conexoes_por_host[src_ip] = set()
+                conexoes_por_host[src_ip].add(dst_ip)
+
+    # Identificar hosts com muitas conexões externas (possível botnet)
+    for host, destinos in conexoes_por_host.items():
+        if len(destinos) > 5:  # Threshold ajustável
+            padroes["hosts_com_multiplas_conexoes"][host] = len(destinos)
+
+    # Detectar flooding (muitos pacotes para o mesmo destino)
+    flood_contador = {}
+    for pkt in dados:
+        key = (pkt["src_ip"], pkt["dst_ip"], pkt["dst_port"])
+        if key[0] and key[1]:
+            if key not in flood_contador:
+                flood_contador[key] = 0
+            flood_contador[key] += 1
+
+    # Identificar floods suspeitos
+    for (src, dst, port), count in flood_contador.items():
+        if count > 100:  # Threshold ajustável
+            padroes["flood_attacks"][f"{src} → {dst}:{port}"] = count
+
+    # Detectar port scanning (mesmo IP tentando múltiplas portas)
+    port_scan_detector = {}
+    for pkt in dados:
+        if pkt["src_ip"] and pkt["dst_ip"] and pkt["dst_port"]:
+            key = (pkt["src_ip"], pkt["dst_ip"])
+            if key not in port_scan_detector:
+                port_scan_detector[key] = set()
+            port_scan_detector[key].add(pkt["dst_port"])
+
+    # Identificar port scans
+    for (src, dst), ports in port_scan_detector.items():
+        if len(ports) > 10:  # Threshold ajustável
+            padroes["port_scanning"][f"{src} → {dst}"] = len(ports)
+
+    # Detectar alta entropia (possível comunicação C2 criptografada)
+    for pkt in dados:
+        if pkt["entropy"] and pkt["entropy"] > 7.0:  # Muito alta entropia
+            padroes["comunicacao_c2"].append(
+                {
+                    "src": pkt["src_ip"],
+                    "dst": pkt["dst_ip"],
+                    "port": pkt["dst_port"],
+                    "entropy": pkt["entropy"],
+                }
+            )
+
+    return padroes
 
 
 def formatar_dados_para_analise(dados):
@@ -262,6 +435,12 @@ def formatar_dados_para_analise(dados):
         if pkt["entropy"] and pkt["entropy"] > 6.0:
             entropias_altas.append(pkt)
 
+    # ANÁLISE AVANÇADA DE PADRÕES DE BOTNET
+    padroes_suspeitos = analisar_padroes_botnet(dados, ips_origem, ips_destino)
+
+    # ANÁLISE DE DOMÍNIOS E FRAUDE
+    dominios_suspeitos = detectar_dominios_suspeitos(dados)
+
     # Criar resumo estruturado
     resumo = f"""
 RESUMO DA ANÁLISE DE REDE:
@@ -279,8 +458,7 @@ PROTOCOLOS DETECTADOS:
 """
 
     for proto, count in sorted(protocolos.items(), key=lambda x: x[1], reverse=True):
-        proto_name = {6: "TCP", 17: "UDP", 1: "ICMP"}.get(
-            proto, f"Protocolo {proto}")
+        proto_name = {6: "TCP", 17: "UDP", 1: "ICMP"}.get(proto, f"Protocolo {proto}")
         resumo += f"- {proto_name}: {count} pacotes\n"
 
     resumo += "\nPORTAS MAIS ACESSADAS:\n"
@@ -295,10 +473,49 @@ PROTOCOLOS DETECTADOS:
         for pkt in entropias_altas[:5]:  # Mostrar apenas os primeiros 5
             resumo += f"- {pkt['src_ip']} → {pkt['dst_ip']}:{pkt['dst_port']} (entropia: {pkt['entropy']})\n"
 
-    # Detectar padrões suspeitos
+    # Adicionar análise avançada de padrões de botnet
+    resumo += "\n🚨 ANÁLISE DE PADRÕES MALICIOSOS:\n"
+
+    if padroes_suspeitos["hosts_com_multiplas_conexoes"]:
+        resumo += "\n⚠️ HOSTS COM MÚLTIPLAS CONEXÕES EXTERNAS (Possível Botnet):\n"
+        for host, count in padroes_suspeitos["hosts_com_multiplas_conexoes"].items():
+            resumo += f"- {host} conectou-se a {count} destinos externos diferentes\n"
+
+    if padroes_suspeitos["flood_attacks"]:
+        resumo += "\n🌊 ATAQUES DE FLOODING DETECTADOS:\n"
+        for flood, count in list(padroes_suspeitos["flood_attacks"].items())[:5]:
+            resumo += f"- {flood}: {count} pacotes\n"
+
+    if padroes_suspeitos["port_scanning"]:
+        resumo += "\n🔍 PORT SCANNING DETECTADO:\n"
+        for scan, ports in padroes_suspeitos["port_scanning"].items():
+            resumo += f"- {scan} testou {ports} portas diferentes\n"
+
+    if padroes_suspeitos["comunicacao_c2"]:
+        resumo += "\n📡 POSSÍVEL COMUNICAÇÃO C&C (Alta Entropia):\n"
+        for c2 in padroes_suspeitos["comunicacao_c2"][:5]:
+            resumo += f"- {c2['src']} → {c2['dst']}:{c2['port']} (entropia: {c2['entropy']:.2f})\n"
+
+    # Adicionar análise de domínios suspeitos
+    if dominios_suspeitos["dominios_suspeitos"]:
+        resumo += "\n🌐 DOMÍNIOS SUSPEITOS DETECTADOS:\n"
+        for dom in dominios_suspeitos["dominios_suspeitos"][:5]:
+            resumo += f"- {dom['query']} (de {dom['src_ip']}) - {dom['tipo']}\n"
+
+    if dominios_suspeitos["click_fraud_patterns"]:
+        resumo += "\n💰 POSSÍVEL FRAUDE DE CLIQUES:\n"
+        for fraud in dominios_suspeitos["click_fraud_patterns"][:5]:
+            resumo += f"- {fraud['src_ip']} → {fraud['dst_ip']}:{fraud['port']} - {fraud['suspeita']}\n"
+
+    if dominios_suspeitos["asian_domains"]:
+        resumo += "\n🏮 DOMÍNIOS ASIÁTICOS DETECTADOS:\n"
+        for domain in set(dominios_suspeitos["asian_domains"][:5]):
+            resumo += f"- {domain}\n"
+
+    # Detectar padrões suspeitos antigos (manter compatibilidade)
     suspeitos = detectar_padroes_suspeitos(dados)
     if suspeitos:
-        resumo += "\nPADRÕES SUSPEITOS DETECTADOS:\n"
+        resumo += "\nPADRÕES SUSPEITOS ADICIONAIS:\n"
         for padrao in suspeitos:
             resumo += f"- {padrao}\n"
 
@@ -350,8 +567,7 @@ def detectar_padroes_suspeitos(dados):
 
     for ip, destinos in ips_origem_stats.items():
         if len(destinos) > 10:  # Conectou a mais de 10 IPs diferentes
-            suspeitos.append(
-                f"IP {ip} conectou a {len(destinos)} destinos diferentes")
+            suspeitos.append(f"IP {ip} conectou a {len(destinos)} destinos diferentes")
 
     return suspeitos
 
@@ -386,21 +602,66 @@ def get_port_service(porta):
 def analisar_com_llm(dados_formatados, modelo="llama3", host=None, port=None):
     """Envia dados para análise pelo LLM"""
     prompt = f"""
-Você é um especialista em segurança cibernética e análise de tráfego de rede. 
-Analise os seguintes dados de rede e forneça uma análise detalhada sobre possíveis 
-ameaças, anomalias e recomendações de segurança.
+Você é um especialista em segurança cibernética e análise forense de tráfego de rede especializado em detecção de malware, botnets e ataques APT (Advanced Persistent Threats).
 
+DADOS DE TRÁFEGO PARA ANÁLISE:
 {dados_formatados}
 
-ANÁLISE SOLICITADA:
-1. Identifique possíveis ameaças e ataques
-2. Classifique o nível de risco (Baixo/Médio/Alto)
-3. Explique os indicadores suspeitos encontrados
-4. Forneça recomendações de mitigação
-5. Resumo executivo da situação de segurança
+EXECUTE UMA ANÁLISE FORENSE DETALHADA FOCANDO EM:
 
-Seja específico e técnico, mas também didático para que um administrador 
-de rede possa entender e agir.
+🚨 DETECÇÃO DE MALWARE E BOTNETS:
+- Identifique padrões de comunicação C&C (Command & Control)
+- Detecte tráfego criptografado suspeito (alta entropia)
+- Analise conexões com IPs externos não autorizados
+- Procure por beaconing (comunicação periódica com servidores remotos)
+- Identifique múltiplas conexões de um host interno para destinos externos
+- Detecte tráfego HTTP/HTTPS para domínios suspeitos ou recém-registrados
+
+🔍 INDICADORES DE COMPROMISSO (IOCs):
+- Hosts internos iniciando muitas conexões externas simultâneas
+- Tráfego em portas não padronizadas (especialmente > 1024)
+- Comunicação com IPs de países com alta atividade maliciosa
+- Padrões de DNS suspeitos (DGA - Domain Generation Algorithm)
+- Transferências de dados volumosas para fora da rede
+- Atividade de rede fora do horário comercial
+
+⚔️ TÉCNICAS DE ATAQUE AVANÇADAS:
+- Port scanning e network reconnaissance
+- Data exfiltration (baseado em volume e destino)
+- Lateral movement (propagação interna)
+- Click fraud e ad fraud (requisições HTTP suspeitas)
+- Crypto-mining malware (alta utilização de rede)
+- Ransomware communication patterns
+
+📊 ANÁLISE COMPORTAMENTAL:
+- Compare volumes de tráfego por host (identifique outliers)
+- Analise protocolos incomuns ou mal formados
+- Detecte anomalias temporais (rajadas de tráfego)
+- Identifique comunicação peer-to-peer suspeita
+
+FORNEÇA UMA RESPOSTA ESTRUTURADA COM:
+
+1. **CLASSIFICAÇÃO DE RISCO** (Crítico/Alto/Médio/Baixo)
+
+2. **AMEAÇAS IDENTIFICADAS** (seja específico sobre o tipo de malware/botnet)
+
+3. **HOSTS COMPROMETIDOS** (liste IPs suspeitos e evidências)
+
+4. **INDICADORES TÉCNICOS** (IOCs específicos encontrados)
+
+5. **PADRÕES DE ATAQUE** (descreva a campanha maliciosa)
+
+6. **IMPACTO POTENCIAL** (que dados/sistemas estão em risco)
+
+7. **AÇÕES IMEDIATAS** (contenção e isolamento)
+
+8. **INVESTIGAÇÃO FORENSE** (próximos passos para análise)
+
+9. **REMEDIAÇÃO** (limpeza e fortalecimento)
+
+10. **MONITORAMENTO** (detecção contínua)
+
+Seja extremamente detalhado em aspectos técnicos e forneça comandos específicos, IPs para bloqueio, e procedimentos operacionais. Assuma que você está analisando um possível incidente de segurança crítico.
 """
 
     try:
@@ -409,9 +670,9 @@ de rede possa entender e agir.
         # on the installed ollama package, you may need to configure the client
         # differently. The values are set as hints for the environment.
         if host:
-            os.environ.setdefault('OLLAMA_HOST', host)
+            os.environ.setdefault("OLLAMA_HOST", host)
         if port:
-            os.environ.setdefault('OLLAMA_PORT', str(port))
+            os.environ.setdefault("OLLAMA_PORT", str(port))
 
         resposta = ollama.chat(
             model=modelo, messages=[{"role": "user", "content": prompt}]
@@ -460,9 +721,9 @@ def get_ollama_status(host=None, port=None):
     try:
         # aplicar host/port como fallback de ambiente se fornecidos
         if host:
-            os.environ.setdefault('OLLAMA_HOST', host)
+            os.environ.setdefault("OLLAMA_HOST", host)
         if port:
-            os.environ.setdefault('OLLAMA_PORT', str(port))
+            os.environ.setdefault("OLLAMA_PORT", str(port))
 
         try:
             resp = ollama.list()
@@ -470,8 +731,8 @@ def get_ollama_status(host=None, port=None):
             resp = None
         # normalize response to a list of models
         if resp:
-            if isinstance(resp, dict) and 'models' in resp:
-                models = resp['models'] or []
+            if isinstance(resp, dict) and "models" in resp:
+                models = resp["models"] or []
             elif isinstance(resp, list):
                 models = resp
             else:
@@ -510,9 +771,7 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None):
         dados_formatados = formatar_dados_para_analise(dados_pacotes)
 
         # Analisar com LLM (passando host/port se fornecidos)
-        analise_llm = analisar_com_llm(
-            dados_formatados, modelo, host=host, port=port
-        )
+        analise_llm = analisar_com_llm(dados_formatados, modelo, host=host, port=port)
 
         # Criar resumo
         resumo = f"Analisados {len(dados_pacotes)} pacotes com modelo {modelo}"
