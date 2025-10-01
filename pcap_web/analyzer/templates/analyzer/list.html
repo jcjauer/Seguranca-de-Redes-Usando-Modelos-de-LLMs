@@ -1,0 +1,229 @@
+{% extends 'analyzer/base.html' %}
+
+{% block title %}Todas as Análises{% endblock %}
+
+{% block page_title %}
+    <i class="fas fa-list"></i> Todas as Análises
+{% endblock %}
+
+{% block page_actions %}
+    <a href="{% url 'index' %}" class="btn btn-primary">
+        <i class="fas fa-upload"></i> Nova Análise
+    </a>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+/* Responsive layout that adapts automatically when --sidebar-width changes */
+@media (min-width: 768px) {
+    /* Make the inner container span the remaining viewport width (depends on --sidebar-width set in base) */
+    .main-content .container-fluid {
+        max-width: none;
+        width: calc(100vw - var(--sidebar-width) - 3rem);
+        padding-left: 1rem; /* small horizontal margin */
+        padding-right: 1rem; /* small horizontal margin */
+        box-sizing: border-box;
+        transition: width .18s ease;
+    }
+
+    /* Let columns be flexible so cards wrap/use available width nicely */
+    .main-content .row > [class*='col-'] {
+        flex: 1 1 240px; /* grow and wrap as needed */
+        min-width: 220px;
+    }
+
+    /* Make cards stretch to fill column height for consistent look */
+    .main-content .card {
+        height: 100%;
+    }
+
+    /* Upload area should occupy full column width and scale its padding */
+    .main-content .upload-area {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 36px;
+    }
+
+    /* Slightly tighten spacing on statistic cards to use space efficiently */
+    .main-content .card .card-body { padding: .8rem; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-body">
+                
+                {# Placeholder para as notificações dinâmicas #}
+                <div id="notification-placeholder"></div>
+
+                {% if analyses %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>Arquivo</th>
+                                    <th>Modelo</th>
+                                    <th>Status</th>
+                                    <th>Pacotes</th>
+                                    <th>Duração</th>
+                                    <th>Data</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for analysis in analyses %}
+                                {# Adicionado um ID único para cada linha da tabela #}
+                                <tr id="analysis-row-{{ analysis.id }}">
+                                    <td>
+                                        <i class="fas fa-file-alt text-muted"></i>
+                                        {{ analysis.original_filename }}
+                                        <br>
+                                        <small class="text-muted">{{ analysis.file_size_mb }} MB</small>
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-secondary">{{ analysis.llm_model }}</span>
+                                    </td>
+                                    <td>
+                                        {% if analysis.status == 'completed' %}
+                                            <span class="badge bg-success">
+                                                <i class="fas fa-check"></i> Concluída
+                                            </span>
+                                        {% elif analysis.status == 'processing' %}
+                                            <span class="badge bg-warning">
+                                                <i class="fas fa-spinner fa-spin"></i> Processando
+                                            </span>
+                                        {% elif analysis.status == 'pending' %}
+                                            <span class="badge bg-info">
+                                                <i class="fas fa-clock"></i> Pendente
+                                            </span>
+                                        {% else %}
+                                            <span class="badge bg-danger">
+                                                <i class="fas fa-exclamation-triangle"></i> Erro
+                                            </span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if analysis.packet_count %}
+                                            {{ analysis.packet_count|floatformat:0 }}
+                                        {% else %}
+                                            <span class="text-muted">-</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if analysis.analysis_duration %}
+                                            {{ analysis.analysis_duration }}s
+                                        {% else %}
+                                            <span class="text-muted">-</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ analysis.created_at|date:"d/m/Y H:i" }}</td>
+                                    <td>
+                                        <div class="btn-group btn-group-sm">
+                                            <a href="{% url 'analysis_detail' analysis.id %}" 
+                                               class="btn btn-outline-primary" title="Ver Detalhes">
+                                                <i class="fas fa-eye"></i>
+                                            </a>
+                                            
+                                            {# Formulário modificado para ser controlado por JavaScript #}
+                                            <form class="delete-form" method="post" action="{% url 'delete_analysis' analysis.id %}" 
+                                                  style="display: inline;" data-analysis-id="{{ analysis.id }}">
+                                                {% csrf_token %}
+                                                <button type="submit" class="btn btn-outline-danger" title="Deletar">
+                                                    <i class="fas fa-trash"></i>
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-5">
+                        <i class="fas fa-inbox fa-4x text-muted mb-3"></i>
+                        <h4 class="text-muted">Nenhuma análise encontrada</h4>
+                        <p class="text-muted">Faça upload de um arquivo PCAP para começar</p>
+                        <a href="{% url 'index' %}" class="btn btn-primary">
+                            <i class="fas fa-upload"></i> Fazer Upload
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Adiciona um listener para todos os formulários de deleção
+    const deleteForms = document.querySelectorAll('.delete-form');
+    
+    deleteForms.forEach(form => {
+        form.addEventListener('submit', function(event) {
+            // Previne o envio padrão do formulário, que recarrega a página
+            event.preventDefault();
+
+            // Exibe a caixa de confirmação
+            if (confirm('Deletar esta análise?')) {
+                const analysisId = form.dataset.analysisId;
+                const url = form.action;
+                const csrfToken = form.querySelector('[name=csrfmiddlewaretoken]').value;
+
+                // Envia a requisição de deleção em segundo plano (AJAX)
+                fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': csrfToken,
+                        'Content-Type': 'application/json'
+                    }
+                })
+                .then(response => {
+                    if (response.ok) {
+                        // Se a resposta for bem-sucedida, remove a linha da tabela
+                        const rowToRemove = document.getElementById('analysis-row-' + analysisId);
+                        if (rowToRemove) {
+                            rowToRemove.remove();
+                        }
+                        // Mostra a notificação de sucesso
+                        showNotification('Arquivo deletado com sucesso!', 'success');
+                    } else {
+                        // Se houver um erro, mostra a notificação de falha
+                        showNotification('Falha ao deletar o arquivo.', 'danger');
+                    }
+                })
+                .catch(error => {
+                    // Em caso de erro de rede, etc.
+                    console.error('Erro:', error);
+                    showNotification('Falha ao deletar o arquivo.', 'danger');
+                });
+            }
+        });
+    });
+
+    // Função para criar e exibir as notificações
+    function showNotification(message, type) {
+        const placeholder = document.getElementById('notification-placeholder');
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = `
+            <div class="alert alert-${type} alert-dismissible fade show" role="alert">
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        `;
+        placeholder.append(wrapper);
+
+        // Remove a notificação após 5 segundos
+        setTimeout(() => {
+            const bsAlert = new bootstrap.Alert(wrapper.firstChild);
+            bsAlert.close();
+        }, 5000);
+    }
+});
+</script>
+{% endblock %}
