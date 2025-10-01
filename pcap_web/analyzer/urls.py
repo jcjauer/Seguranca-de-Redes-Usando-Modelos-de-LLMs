@@ -16,4 +16,5 @@ urlpatterns = [
         name="delete_analysis",
     ),
     path("list/", views.analysis_list, name="analysis_list"),
+    path("ollama/config/", views.update_ollama_config, name="update_ollama_config"),
 ]
