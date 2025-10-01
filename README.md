@@ -74,13 +74,7 @@ Exemplos para criar e ativar o ambiente virtual (escolha o comando conforme seu 
 PowerShell (Windows):
 ```powershell
 python -m venv venv
-.\venv\Scripts\Activate.ps1
-```
-
-Command Prompt (cmd) - Windows:
-```cmd
-python -m venv venv
-venv\Scripts\activate.bat
+venv\Scripts\activate
 ```
 
 Bash (Linux / macOS):

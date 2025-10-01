@@ -6,19 +6,9 @@
     <i class="fas fa-tachometer-alt"></i> Dashboard
 {% endblock %}
 
-{% block page_actions %}
-    {% if ollama_status %}
-        {% if ollama_status.ok %}
-            <span class="badge bg-success">
-                <i class="fas fa-link"></i> Ollama: {{ ollama_status.models }} modelos
-            </span>
-        {% else %}
-            <span class="badge bg-danger" title="{{ ollama_status.error }}">
-                <i class="fas fa-unlink"></i> Ollama: offline
-            </span>
-        {% endif %}
-    {% endif %}
-{% endblock %}
+{% block page_actions %}{% endblock %}
+
+{# usando sidebar_status padrão definido em base.html #}
 
 {% block extra_css %}
 <style>
@@ -170,16 +160,17 @@
                         </div>
                         <div class="col-md-6">
                             <div class="form-group mb-3">
-                                <label for="id_llm_model">{{ form.llm_model.label }}:</label>
+                                <label for="{{ form.llm_model.id_for_label }}">{{ form.llm_model.label }}:</label>
                                 {{ form.llm_model }}
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-8">
-                                    <label for="id_llm_host">{{ form.llm_host.label }}:</label>
+                                    <label for="{{ form.llm_host.id_for_label }}">{{ form.llm_host.label }}:</label>
+                                    {# Render sem filtro inexistente; classe/readonly será aplicado via JS #}
                                     {{ form.llm_host }}
                                 </div>
                                 <div class="col-4">
-                                    <label for="id_llm_port">{{ form.llm_port.label }}:</label>
+                                    <label for="{{ form.llm_port.id_for_label }}">{{ form.llm_port.label }}:</label>
                                     {{ form.llm_port }}
                                 </div>
                             </div>
@@ -301,31 +292,34 @@ document.addEventListener('DOMContentLoaded', function() {
     const fileSize = document.getElementById('file-size');
     const form = document.getElementById('upload-form');
 
-    // Click to select file
-    uploadArea.addEventListener('click', () => fileInput.click());
+    if (uploadArea) {
+        // Click to select file
+        uploadArea.addEventListener('click', () => fileInput && fileInput.click());
 
-    // Drag and drop
-    uploadArea.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        uploadArea.classList.add('dragover');
-    });
+        // Drag and drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
 
-    uploadArea.addEventListener('dragleave', () => {
-        uploadArea.classList.remove('dragover');
-    });
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
 
-    uploadArea.addEventListener('drop', (e) => {
-        e.preventDefault();
-        uploadArea.classList.remove('dragover');
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            fileInput.files = files;
-            handleFileSelect();
-        }
-    });
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && fileInput) {
+                fileInput.files = files;
+                handleFileSelect();
+            }
+        });
+    }
 
-    // File selection
-    fileInput.addEventListener('change', handleFileSelect);
+    if (fileInput) {
+        fileInput.addEventListener('change', handleFileSelect);
+    }
 
     function handleFileSelect() {
         const file = fileInput.files[0];
@@ -337,10 +331,35 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // Form submission
-    form.addEventListener('submit', function(e) {
-        uploadBtn.disabled = true;
-        uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Enviando...';
-    });
+    if (form && uploadBtn) {
+        form.addEventListener('submit', function(e) {
+            uploadBtn.disabled = true;
+            uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Enviando...';
+        });
+    }
+});
+</script>
+<script>
+// Sincroniza campos de host/port principais com a barra lateral em tempo real
+document.addEventListener('DOMContentLoaded', () => {
+    function syncValue(sidebarSelector) {
+        const sidebarInput = document.querySelector(sidebarSelector);
+        if (!sidebarInput) return;
+        const targetSelector = sidebarInput.getAttribute('data-sync-target');
+        if (!targetSelector) return;
+        const targetInput = document.querySelector(targetSelector);
+        if (!targetInput) return;
+        // primeira sincronização
+        targetInput.value = sidebarInput.value;
+        // marca como somente leitura e adiciona classe indicativa
+        try { targetInput.classList.add('readonly-sync'); targetInput.setAttribute('readonly','readonly'); } catch(e) {}
+        // eventos
+        ['input','change'].forEach(evt => {
+            sidebarInput.addEventListener(evt, () => { targetInput.value = sidebarInput.value; });
+        });
+    }
+    syncValue('#sidebar-ollama-host');
+    syncValue('#sidebar-ollama-port');
 });
 </script>
 <script>

@@ -1,0 +1,33 @@
+# Dependências essenciais do projeto
+
+# Framework web
+django==5.2.5
+
+# Análise de PCAP
+scapy==2.6.1
+
+# Integração com LLM
+ollama==0.5.3
+pydantic==2.11.7
+pydantic-core==2.33.2
+
+# Dependências do HTTP (para ollama)
+httpx==0.28.1
+anyio==4.10.0
+httpcore==1.0.9
+h11==0.16.0
+sniffio==1.3.1
+certifi==2025.8.3
+idna==3.10
+
+# Processamento de imagens (se necessário para análise)
+pillow==11.3.0
+
+# Utilitários Python
+asgiref==3.9.1
+sqlparse==0.5.3
+tzdata==2025.2
+typing-extensions==4.15.0
+annotated-types==0.7.0
+typing-inspection==0.4.1
+requests==2.32.3

@@ -1,4 +1,5 @@
 # analyzer/views.py
+from django.views.decorators.http import require_POST
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
 from django.contrib import messages
@@ -13,13 +14,21 @@ import threading
 
 from .models import PCAPAnalysis
 from .forms import PCAPUploadForm
-from .pcap_analyzer import analyze_pcap_with_llm, get_available_models, get_ollama_status
+from .pcap_analyzer import analyze_pcap_with_llm, get_available_models
+from . import context_processors
 
 
 def index(request):
     """Página principal com upload e lista de análises"""
+    # Obter status atual explicitamente (evita depender da ordem de execução do context processor durante render)
+    try:
+        ollama_status = context_processors.ollama_status_processor(
+            request).get('ollama_status')
+    except Exception:
+        ollama_status = None
     if request.method == "POST":
-        form = PCAPUploadForm(request.POST, request.FILES)
+        form = PCAPUploadForm(request.POST, request.FILES,
+                              request=request, ollama_status=ollama_status)
         if form.is_valid():
             # Criar registro de análise
             analysis = PCAPAnalysis(
@@ -49,13 +58,13 @@ def index(request):
             )
             return redirect("analysis_detail", analysis_id=analysis.id)
     else:
-        form = PCAPUploadForm()
+        form = PCAPUploadForm(request=request, ollama_status=ollama_status)
 
     analyses = PCAPAnalysis.objects.all()[:10]  # Últimas 10 análises
     context = {
         "form": form,
         "available_models": get_available_models(),
-        "ollama_status": get_ollama_status(),
+        # ollama_status removido: agora fornecido via context processor global
         "analyses": analyses,
         "total_analyses": PCAPAnalysis.objects.count(),
         "completed_analyses": PCAPAnalysis.objects.filter(status="completed").count(),
@@ -145,3 +154,78 @@ def process_pcap_analysis(analysis_id, host=None, port=None):
 
             logger = logging.getLogger("analyzer")
             logger.error(f"Failed to retrieve analysis {analysis_id}: {e}")
+
+
+@require_POST
+def update_ollama_config(request):
+    """Atualiza host/port do Ollama; suporta resposta JSON para chamadas AJAX (fetch)."""
+    clear = request.POST.get('clear', '') == '1'
+    ajax = request.headers.get(
+        'x-requested-with') == 'XMLHttpRequest' or 'application/json' in request.headers.get('Accept', '')
+
+    if clear:
+        request.session.pop('OLLAMA_HOST_OVERRIDE', None)
+        request.session.pop('OLLAMA_PORT_OVERRIDE', None)
+        if not ajax:
+            messages.success(
+                request, 'Configuração Ollama restaurada para defaults.')
+    else:
+        host_input = request.POST.get('ollama_host', '').strip()
+        port_input = request.POST.get('ollama_port', '').strip()
+        host = host_input
+        port = port_input
+        if host and ':' in host and not port:
+            possible_host, possible_port = host.rsplit(':', 1)
+            if possible_port.isdigit():
+                host = possible_host
+                port = possible_port
+        if host:
+            request.session['OLLAMA_HOST_OVERRIDE'] = host
+        if port:
+            try:
+                int(port)
+            except ValueError:
+                if ajax:
+                    return JsonResponse({"status": "error", "error": "Porta inválida"}, status=400)
+                messages.error(request, 'Porta inválida.')
+                return redirect(request.META.get('HTTP_REFERER', 'index'))
+            request.session['OLLAMA_PORT_OVERRIDE'] = port
+        if not ajax:
+            messages.success(request, 'Configuração Ollama atualizada.')
+
+    # Limpar caches por host/port (pattern) + legacy key
+    from django.core.cache import cache
+    try:
+        # Se armazenamos por chave padrao 'ollama_status::<host>:<port>' podemos invalidar a chave específica
+        host = request.session.get('OLLAMA_HOST_OVERRIDE') or getattr(
+            settings, 'OLLAMA_HOST', 'localhost')
+        port = request.session.get('OLLAMA_PORT_OVERRIDE') or getattr(
+            settings, 'OLLAMA_PORT', '11434')
+        cache.delete(f'ollama_status::{host}:{port}')
+    except Exception:
+        pass
+    cache.delete('ollama_status_cache_v2')
+
+    # Recalcular status atualizado
+    try:
+        fresh_status = context_processors.ollama_status_processor(
+            request).get('ollama_status')
+    except Exception:
+        fresh_status = None
+
+    if ajax:
+        # Serializar somente campos necessários
+        payload = {
+            'status': 'ok',
+            'config': {
+                'host': fresh_status.get('config', {}).get('host') if fresh_status else None,
+                'port': fresh_status.get('config', {}).get('port') if fresh_status else None,
+                'override': fresh_status.get('config', {}).get('override') if fresh_status else False,
+            },
+            'ok': fresh_status.get('ok') if fresh_status else False,
+            'model_count': fresh_status.get('model_count') if fresh_status else 0,
+            'fallback': fresh_status.get('fallback') if fresh_status else 'none'
+        }
+        return JsonResponse(payload)
+
+    return redirect(request.META.get('HTTP_REFERER', 'index'))
