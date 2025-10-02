@@ -1,0 +1,380 @@
+{% extends 'analyzer/base.html' %}
+
+{% block title %}Dashboard - Analisador PCAP{% endblock %}
+
+{% block page_title %}
+    <i class="fas fa-tachometer-alt"></i> Dashboard
+{% endblock %}
+
+{% block page_actions %}{% endblock %}
+
+{# usando sidebar_status padrão definido em base.html #}
+
+{% block extra_css %}
+<style>
+/* Responsive layout that adapts automatically when --sidebar-width changes */
+@media (min-width: 768px) {
+    /* Make the inner container span the remaining viewport width (depends on --sidebar-width set in base) */
+    .main-content .container-fluid {
+        max-width: none;
+        width: calc(100vw - var(--sidebar-width) - 3rem);
+        padding-left: 1rem; /* small horizontal margin */
+        padding-right: 1rem; /* small horizontal margin */
+        box-sizing: border-box;
+        transition: width .18s ease;
+    }
+
+    /* Let columns be flexible so cards wrap/use available width nicely */
+    .main-content .row > [class*='col-'] {
+        flex: 1 1 240px; /* grow and wrap as needed */
+        min-width: 220px;
+    }
+
+    /* Make cards stretch to fill column height for consistent look */
+    .main-content .card {
+        height: 100%;
+    }
+
+    /* Upload area should occupy full column width and scale its padding */
+    .main-content .upload-area {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 36px;
+    }
+
+    /* Slightly tighten spacing on statistic cards to use space efficiently */
+    .main-content .card .card-body { padding: .8rem; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Statistics Cards -->
+<div class="row mb-4">
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-primary shadow h-100 py-2">
+            <div class="card-body">
+                <div class="d-flex align-items-center flex-nowrap">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-file-alt fa-2x text-gray-300"></i>
+                    </div>
+                    <div class="ms-3">
+                        <div class="text-xs font-weight-bold text-primary text-uppercase">
+                            Total de Análises
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800 mt-1">
+                            {{ total_analyses }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-success shadow h-100 py-2">
+            <div class="card-body">
+                <div class="d-flex align-items-center flex-nowrap">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-check-circle fa-2x text-gray-300"></i>
+                    </div>
+                    <div class="ms-3">
+                        <div class="text-xs font-weight-bold text-success text-uppercase">
+                            Concluídas
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800 mt-1">
+                            {{ completed_analyses }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-warning shadow h-100 py-2">
+            <div class="card-body">
+                <div class="d-flex align-items-center flex-nowrap">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-clock fa-2x text-gray-300"></i>
+                    </div>
+                    <div class="ms-3">
+                        <div class="text-xs font-weight-bold text-warning text-uppercase">
+                            Pendentes
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800 mt-1">
+                            {{ pending_analyses }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card border-left-info shadow h-100 py-2">
+            <div class="card-body">
+                <div class="d-flex align-items-center flex-nowrap">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-percentage fa-2x text-gray-300"></i>
+                    </div>
+                    <div class="ms-3">
+                        <div class="text-xs font-weight-bold text-info text-uppercase">
+                            Taxa de Sucesso
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold text-gray-800 mt-1">
+                            {% if total_analyses > 0 %}
+                                {{ completed_analyses|floatformat:0 }}/ {{ total_analyses }} 
+                                ({% widthratio completed_analyses total_analyses 100 %}%)
+                            {% else %}
+                                0%
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Upload Section -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header py-3">
+                <h6 class="m-0 font-weight-bold text-primary">
+                    <i class="fas fa-upload"></i> Upload Rápido
+                </h6>
+            </div>
+            <div class="card-body">
+                <form method="post" enctype="multipart/form-data" id="upload-form">
+                    {% csrf_token %}
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="upload-area" id="upload-area">
+                                <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
+                                <h5>Arraste seu arquivo PCAP aqui</h5>
+                                <p class="text-muted">ou clique para selecionar</p>
+                                {{ form.pcap_file }}
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-group mb-3">
+                                <label for="{{ form.llm_model.id_for_label }}">{{ form.llm_model.label }}:</label>
+                                {{ form.llm_model }}
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-8">
+                                    <label for="{{ form.llm_host.id_for_label }}">{{ form.llm_host.label }}:</label>
+                                    {# Render sem filtro inexistente; classe/readonly será aplicado via JS #}
+                                    {{ form.llm_host }}
+                                </div>
+                                <div class="col-4">
+                                    <label for="{{ form.llm_port.id_for_label }}">{{ form.llm_port.label }}:</label>
+                                    {{ form.llm_port }}
+                                </div>
+                            </div>
+                            <div id="file-info" style="display: none;">
+                                <div class="alert alert-info">
+                                    <strong>Arquivo selecionado:</strong>
+                                    <span id="file-name"></span>
+                                    <br>
+                                    <strong>Tamanho:</strong>
+                                    <span id="file-size"></span>
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-primary btn-lg" id="upload-btn">
+                                <i class="fas fa-upload"></i> Iniciar Análise
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Analyses -->
+<div class="row">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header py-3 d-flex justify-content-between align-items-center">
+                <h6 class="m-0 font-weight-bold text-primary">
+                    <i class="fas fa-history"></i> Análises Recentes
+                </h6>
+                <a href="{% url 'analysis_list' %}" class="btn btn-sm btn-outline-primary">
+                    Ver Todas
+                </a>
+            </div>
+            <div class="card-body">
+                {% if analyses %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Arquivo</th>
+                                    <th>Modelo</th>
+                                    <th>Status</th>
+                                    <th>Pacotes</th>
+                                    <th>Data</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for analysis in analyses %}
+                                <tr>
+                                    <td>
+                                        <i class="fas fa-file-alt text-muted"></i>
+                                        {{ analysis.original_filename }}
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-secondary">{{ analysis.llm_model }}</span>
+                                    </td>
+                                    <td>
+                                        {% if analysis.status == 'completed' %}
+                                            <span class="badge bg-success">
+                                                <i class="fas fa-check"></i> Concluída
+                                            </span>
+                                        {% elif analysis.status == 'processing' %}
+                                            <span class="badge bg-warning">
+                                                <i class="fas fa-spinner fa-spin"></i> Processando
+                                            </span>
+                                        {% elif analysis.status == 'pending' %}
+                                            <span class="badge bg-info">
+                                                <i class="fas fa-clock"></i> Pendente
+                                            </span>
+                                        {% else %}
+                                            <span class="badge bg-danger">
+                                                <i class="fas fa-exclamation-triangle"></i> Erro
+                                            </span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if analysis.packet_count %}
+                                            {{ analysis.packet_count|floatformat:0 }}
+                                        {% else %}
+                                            -
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ analysis.created_at|date:"d/m/Y H:i" }}</td>
+                                    <td>
+                                        <a href="{% url 'analysis_detail' analysis.id %}" class="btn btn-sm btn-outline-primary">
+                                            <i class="fas fa-eye"></i> Ver
+                                        </a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-inbox fa-3x text-muted mb-3"></i>
+                        <h5 class="text-muted">Nenhuma análise ainda</h5>
+                        <p class="text-muted">Faça upload do seu primeiro arquivo PCAP para começar!</p>
+                        <p class="text-muted">Use o formulário de upload acima para enviar seu arquivo.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const uploadArea = document.getElementById('upload-area');
+    const fileInput = document.getElementById('id_pcap_file');
+    const uploadBtn = document.getElementById('upload-btn');
+    const fileInfo = document.getElementById('file-info');
+    const fileName = document.getElementById('file-name');
+    const fileSize = document.getElementById('file-size');
+    const form = document.getElementById('upload-form');
+
+    if (uploadArea) {
+        // Click to select file
+        uploadArea.addEventListener('click', () => fileInput && fileInput.click());
+
+        // Drag and drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && fileInput) {
+                fileInput.files = files;
+                handleFileSelect();
+            }
+        });
+    }
+
+    if (fileInput) {
+        fileInput.addEventListener('change', handleFileSelect);
+    }
+
+    function handleFileSelect() {
+        const file = fileInput.files[0];
+        if (file) {
+            fileName.textContent = file.name;
+            fileSize.textContent = (file.size / (1024 * 1024)).toFixed(2) + ' MB';
+            fileInfo.style.display = 'block';
+        }
+    }
+
+    // Form submission
+    if (form && uploadBtn) {
+        form.addEventListener('submit', function(e) {
+            uploadBtn.disabled = true;
+            uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Enviando...';
+        });
+    }
+});
+</script>
+<script>
+// Sincroniza campos de host/port principais com a barra lateral em tempo real
+document.addEventListener('DOMContentLoaded', () => {
+    function syncValue(sidebarSelector) {
+        const sidebarInput = document.querySelector(sidebarSelector);
+        if (!sidebarInput) return;
+        const targetSelector = sidebarInput.getAttribute('data-sync-target');
+        if (!targetSelector) return;
+        const targetInput = document.querySelector(targetSelector);
+        if (!targetInput) return;
+        // primeira sincronização
+        targetInput.value = sidebarInput.value;
+        // marca como somente leitura e adiciona classe indicativa
+        try { targetInput.classList.add('readonly-sync'); targetInput.setAttribute('readonly','readonly'); } catch(e) {}
+        // eventos
+        ['input','change'].forEach(evt => {
+            sidebarInput.addEventListener(evt, () => { targetInput.value = sidebarInput.value; });
+        });
+    }
+    syncValue('#sidebar-ollama-host');
+    syncValue('#sidebar-ollama-port');
+});
+</script>
+<script>
+// Listen for sidebar collapse changes and trigger resize for responsive recalculation
+(function() {
+    const observer = new MutationObserver(function(mutations) {
+        for (const m of mutations) {
+            if (m.attributeName === 'class') {
+                // small timeout to allow class toggling to settle
+                setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+                break;
+            }
+        }
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+})();
+</script>
+{% endblock %}
