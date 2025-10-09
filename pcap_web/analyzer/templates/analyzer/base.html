@@ -19,12 +19,7 @@
             flex-direction: column;
             margin: -0.5rem;
         }
-        @media (min-width: 768px) {
-            .sidebar {
-                bottom: 0;
-                margin: -0.5rem;
-            }
-        }
+        /* Removido bloco @media redundante que apenas ajustava bottom/margin */
         /* Normalize box sizing inside sidebar to avoid unexpected width calculations */
         .sidebar, .sidebar * {
             box-sizing: border-box;
@@ -37,6 +32,8 @@
             --sidebar-right-width: 0px;
             /* topbar height default (desktop will override) */
             --topbar-height: 0px;
+                /* largura padrão da scrollbar desktop */
+                --sidebar-scrollbar-width: 4px;
         }
 
         /* Sidebar link base - full width and compact spacing */
@@ -128,32 +125,38 @@
         }
         /* Make sidebar fixed on desktop and push main content */
         @media (min-width: 768px) {
-            /* desktop topbar height */
+            /* altura da topbar desktop */
             :root { --topbar-height: 56px; }
 
             .sidebar {
                 position: fixed;
-                top: 0;
+                top: var(--topbar-height); /* inicia abaixo da topbar */
                 left: 0;
-                width: var(--sidebar-width); /* use CSS variable for responsive behavior */
-                z-index: 1040;
+                width: var(--sidebar-width);
+                height: calc(100vh - var(--topbar-height)); /* limita ao viewport */
                 overflow-y: auto;
-                height: calc(100vh - var(--topbar-height));
+                display: flex;
+                flex-direction: column;
+                padding-top: 1rem;
+                padding-bottom: 2.75rem; /* espaço extra para não cortar Admin */
+                margin: 0; /* evita corte visual no final */
+                scroll-padding-bottom: 3rem; /* garante respiro ao focar último item */
             }
+            .sidebar > .px-3 {
+                flex: 1 1 auto; /* garante expansão interna */
+                display: flex;
+                flex-direction: column;
+            }
+            .sidebar .mt-auto { margin-top: auto; }
+
             .main-content {
-                margin-left: var(--sidebar-width); /* same as sidebar width via variable */
-                margin-right: 0; /* right sidebar removed */
+                margin-left: var(--sidebar-width);
+                margin-right: 0;
+                padding-top: var(--topbar-height); /* garante não ficar sob a topbar */
             }
 
-            /* offset main content from fixed topbar only (keep sidebar positioning intact) */
-            main.col-12.col-md-10.main-content {
-                padding-top: var(--topbar-height);
-            }
-
-            /* ensure offcanvas / mobile elements unaffected */
-            .offcanvas.offcanvas-start {
-                z-index: 1050;
-            }
+            /* manter offcanvas acima da sidebar */
+            .offcanvas.offcanvas-start { z-index: 1050; }
         }
 
         /* Collapsed sidebar state - update CSS variable so main content responds */
@@ -179,6 +182,23 @@
 
         .status-badge {
             font-size: 0.75rem;
+        }
+        /* Status widget adjustments */
+        #sidebar-status .status-badge-item {
+            display: flex;
+            align-items: center;
+            gap: .35rem;
+            font-size: .70rem;
+            padding: .4rem .5rem;
+            white-space: normal;
+            line-height: 1.1;
+        }
+        body.sidebar-collapsed #sidebar-status .status-badge-item .label-text {
+            display: none !important;
+        }
+        body.sidebar-collapsed #sidebar-status .status-badge-item {
+            justify-content: center;
+            padding: .45rem 0.3rem;
         }
         .analysis-card {
             transition: transform 0.2s;
@@ -258,6 +278,23 @@
         .sidebar .mt-auto .nav-link:focus {
             background: rgba(255,255,255,0.08);
             color: #fff;
+        }
+
+        /* Scrollbar leve (desktop) */
+        @media (min-width: 768px) {
+            .sidebar { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.35) transparent; }
+                .sidebar::-webkit-scrollbar { width: var(--sidebar-scrollbar-width); }
+            .sidebar::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
+            .sidebar::-webkit-scrollbar-thumb {
+                background: rgba(255,255,255,0.25);
+                border-radius: 6px;
+                border: 2px solid transparent;
+                background-clip: content-box;
+            }
+            .sidebar::-webkit-scrollbar-thumb:hover {
+                background: rgba(255,255,255,0.4);
+                background-clip: content-box;
+            }
         }
     </style>
     
@@ -353,6 +390,54 @@
                         </li>
                         {% endif %}
                     </ul>
+                                        {% block sidebar_status %}
+                                                <div class="mt-2" id="sidebar-status">
+                                                    {% if ollama_status %}
+                                                        {% if ollama_status.ok %}
+                                                                <div class="badge bg-success w-100 text-start status-badge-item" title="Modelos: {{ ollama_status.models }} | Fallback: {{ ollama_status.fallback }} | Endpoint: {{ ollama_status.config.display }}">
+                                                                    <i class="fas fa-link"></i>
+                                                                    <span class="label-text">Ollama: {{ ollama_status.models }} modelos</span>
+                                                                </div>
+                                                        {% else %}
+                                                                <div class="badge bg-danger w-100 text-start status-badge-item" title="{{ ollama_status.error }}">
+                                                                        <i class="fas fa-unlink"></i>
+                                                                        <span class="label-text">Ollama: offline</span>
+                                                                </div>
+                                                        {% endif %}
+                                                    {% else %}
+                                                        <div class="badge bg-secondary w-100 text-start status-badge-item">
+                                                             <i class="fas fa-minus"></i> <span class="label-text">Ollama: n/d</span>
+                                                        </div>
+                                                    {% endif %}
+                                                    <!-- Form de override de host/port -->
+                                                                                    <form method="post" action="{% url 'update_ollama_config' %}" class="mt-2 p-2 rounded sidebar-config-form" style="background: rgba(255,255,255,0.07);">
+                                                        {% csrf_token %}
+                                                                                    <div class="mb-1 text-white-50 small d-flex align-items-center justify-content-between">
+                                                                                        <span class="label-text">
+                                                                                            Conexão: 
+                                                                                            {% if ollama_status and ollama_status.config %}
+                                                                                                {{ ollama_status.config.source }}
+                                                                                            {% else %}
+                                                                                                padrão
+                                                                                            {% endif %}
+                                                                                        </span>
+                                                                                        {% if ollama_status and ollama_status.config.override %}
+                                                                <span class="badge bg-warning text-dark">Override</span>
+                                                            {% endif %}
+                                                        </div>
+                                                        <div class="mb-1">
+                                                                                          <input type="text" id="sidebar-ollama-host" name="ollama_host" value="{% if ollama_status and ollama_status.config %}{{ ollama_status.config.host }}{% endif %}" placeholder="host" class="form-control form-control-sm" autocomplete="off" data-sync-target="#id_llm_host" />
+                                                        </div>
+                                                        <div class="mb-1">
+                                                                                          <input type="text" id="sidebar-ollama-port" name="ollama_port" value="{% if ollama_status and ollama_status.config %}{{ ollama_status.config.port }}{% endif %}" placeholder="port" class="form-control form-control-sm" autocomplete="off" data-sync-target="#id_llm_port" />
+                                                        </div>
+                                                        <div class="d-flex gap-1">
+                                                            <button type="submit" class="btn btn-sm btn-light w-50"><i class="fas fa-save"></i></button>
+                                                            <button type="submit" name="clear" value="1" class="btn btn-sm btn-outline-light w-50" title="Remover overrides"><i class="fas fa-undo"></i></button>
+                                                        </div>
+                                                    </form>
+                                                </div>
+                                        {% endblock %}
                     <div class="flex-grow-1"></div>
                     <div class="mt-auto">
                         <hr style="border-color: rgba(255,255,255,0.08);">
@@ -427,6 +512,10 @@
             });
         }
     </script>
+    <style>
+    /* Oculta o bloco de configuração quando a sidebar está colapsada */
+    body.sidebar-collapsed .sidebar-config-form { display: none !important; }
+    </style>
     
     <script>
         // Sidebar collapse toggle with persistence

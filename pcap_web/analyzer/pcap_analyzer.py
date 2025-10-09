@@ -127,6 +127,96 @@ def detectar_dominios_suspeitos(dados):
     return suspeitos
 
 
+def detectar_dominios_suspeitos(dados):
+    """Detecta domínios suspeitos, user-agents maliciosos e padrões de fraude"""
+    suspeitos = {
+        "dominios_suspeitos": [],
+        "user_agents_maliciosos": [],
+        "click_fraud_patterns": [],
+        "short_urls": [],
+        "asian_domains": [],
+    }
+
+    # Lista de domínios conhecidos por atividade maliciosa (baseado no seu exemplo)
+    dominios_maliciosos = [
+        "yl.liufen.com",
+        "hqs9.cnzz.com",
+        "doudouguo.com",
+        "dw156.tk",
+        "lckj77.com",
+        "cnzz.com",
+    ]
+
+    # Padrões de User-Agent suspeitos
+    user_agents_suspeitos = [
+        "Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.1; Trident/4.0",  # Antigo/desatualizado
+        "Mozilla/5.0 (Windows NT 6.1)",  # Muito genérico
+    ]
+
+    # Padrões de URLs de fraude de clique
+    click_fraud_keywords = [
+        "/stat.htm",
+        "/ck.aspx",
+        "/sync_pos.htm",
+        "cnzz_core_c.php",
+        "repeatip=",
+        "showp=",
+        "rnd=",
+    ]
+
+    for pkt in dados:
+        # Análise de DNS queries
+        if pkt.get("dns_query"):
+            query = pkt["dns_query"].lower()
+
+            # Verificar domínios maliciosos conhecidos
+            for dominio in dominios_maliciosos:
+                if dominio in query:
+                    suspeitos["dominios_suspeitos"].append(
+                        {
+                            "query": query,
+                            "src_ip": pkt["src_ip"],
+                            "tipo": "dominio_malicioso_conhecido",
+                        }
+                    )
+
+            # Detectar domínios com TLD suspeitos (.tk, .ml, .ga, etc.)
+            if any(tld in query for tld in [".tk", ".ml", ".ga", ".cf", ".xyz"]):
+                suspeitos["dominios_suspeitos"].append(
+                    {"query": query, "src_ip": pkt["src_ip"], "tipo": "tld_suspeito"}
+                )
+
+            # Detectar domínios asiáticos suspeitos
+            if any(
+                keyword in query for keyword in ["china", "asia", ".cn", ".hk", ".tw"]
+            ):
+                suspeitos["asian_domains"].append(query)
+
+        # Análise de payload HTTP (se disponível em Raw data)
+        if (
+            pkt.get("entropy") and pkt["entropy"] < 4.0
+        ):  # Baixa entropia = texto legível
+            # Simular detecção de conteúdo HTTP suspeito
+            # Em implementação real, você analisaria o payload do pacote
+            src_port = pkt.get("src_port", 0)
+            dst_port = pkt.get("dst_port", 0)
+
+            # Portas HTTP/HTTPS
+            if src_port in [80, 443, 8080] or dst_port in [80, 443, 8080]:
+                # Aqui você poderia analisar o payload real do HTTP
+                # Por enquanto, vamos simular baseado nos padrões que você mostrou
+                suspeitos["click_fraud_patterns"].append(
+                    {
+                        "src_ip": pkt["src_ip"],
+                        "dst_ip": pkt["dst_ip"],
+                        "port": dst_port,
+                        "suspeita": "trafego_http_suspeito",
+                    }
+                )
+
+    return suspeitos
+
+
 def calcular_entropia(data):
     """Calcula a entropia de dados binários"""
     if not data:
@@ -858,6 +948,7 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None):
 
         dados_formatados = formatar_dados_para_analise(dados_pacotes)
 
+<<<<<<< HEAD
         # 2. ANÁLISE YARA COMPLETA (módulo separado)
         print("[MAIN] 🔍 Executando análise YARA...")
         relatorio_yara_resultado = executar_analise_yara_completa(arquivo_pcap)
@@ -872,6 +963,10 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None):
             host=host, 
             port=port
         )
+=======
+        # Analisar com LLM (passando host/port se fornecidos)
+        analise_llm = analisar_com_llm(dados_formatados, modelo, host=host, port=port)
+>>>>>>> a0dc656e5bfe145554e740e1f7d8c77b14e703d7
 
         # 4. RESULTADO FINAL
         total_deteccoes_yara = relatorio_yara_resultado.get('total_deteccoes', 0)

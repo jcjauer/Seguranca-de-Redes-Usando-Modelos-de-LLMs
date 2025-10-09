@@ -42,21 +42,40 @@ class PCAPUploadForm(forms.Form):
             attrs={"class": "form-control", "placeholder": "11434"}),
     )
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, request=None, ollama_status=None, **kwargs):
+        """Permite passar request para usar overrides de sessão no host/port e status atual.
+
+        Se houver override de host/port e o status estiver offline (falha HTTP sem fallback), não exibimos modelos antigos.
+        """
         super().__init__(*args, **kwargs)
-        models = get_ollama_models()
-        if models:
-            self.fields['llm_model'].choices = models
-            # primeiro modelo como padrão
-            self.fields['llm_model'].initial = models[0][0]
+        # Determinar se devemos listar modelos
+        offline_override = False
+        if ollama_status:
+            cfg = ollama_status.get('config') or {}
+            if cfg.get('override') and not ollama_status.get('ok') and ollama_status.get('fallback') == 'none':
+                offline_override = True
+
+        if offline_override:
+            self.fields['llm_model'].choices = [("", "Ollama offline (override)")]
+            self.fields['llm_model'].widget.attrs['disabled'] = 'disabled'
+            self.fields['llm_model'].initial = ""
         else:
-            self.fields['llm_model'].choices = [
-                ("", "Nenhum modelo encontrado")]
-        # set default host/port from settings if available
-        self.fields['llm_host'].initial = getattr(
-            settings, 'DEFAULT_LLM_HOST', '127.0.0.1')
-        self.fields['llm_port'].initial = getattr(
-            settings, 'DEFAULT_LLM_PORT', 11434)
+            models = get_ollama_models()
+            if models:
+                self.fields['llm_model'].choices = models
+                self.fields['llm_model'].initial = models[0][0]
+            else:
+                self.fields['llm_model'].choices = [("", "Nenhum modelo encontrado")]
+        # determine host/port defaults with session override precedence
+        session_host = None
+        session_port = None
+        if request is not None and hasattr(request, 'session'):
+            session_host = request.session.get('OLLAMA_HOST_OVERRIDE')
+            session_port = request.session.get('OLLAMA_PORT_OVERRIDE')
+        default_host = getattr(settings, 'DEFAULT_LLM_HOST', '127.0.0.1')
+        default_port = getattr(settings, 'DEFAULT_LLM_PORT', 11434)
+        self.fields['llm_host'].initial = session_host or default_host
+        self.fields['llm_port'].initial = session_port or default_port
 
     def clean_pcap_file(self):
         """Validação do arquivo PCAP"""
@@ -85,7 +104,10 @@ class PCAPUploadForm(forms.Form):
 
     def clean_llm_model(self):
         """Validação do modelo LLM"""
-        model = self.cleaned_data["llm_model"]
+        model = self.cleaned_data.get("llm_model")
+        # Se campo foi desabilitado (offline override), permitir vazio
+        if self.fields['llm_model'].widget.attrs.get('disabled'):
+            return model
         valid_models = [m[0] for m in get_ollama_models()]
         if model not in valid_models:
             raise forms.ValidationError(
