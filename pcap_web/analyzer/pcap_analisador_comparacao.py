@@ -15,26 +15,11 @@ sys.path.append(parent_dir)
 try:
     from scapy.all import rdpcap, IP, IPv6, TCP, UDP, Raw, DNS, DNSQR, ARP, Ether
     import ollama
-    DEPENDENCIES_OK = True
 except ImportError as e:
     print(f"Erro ao importar dependências: {e}")
     print("Certifique-se de que scapy e ollama estão instalados")
-    DEPENDENCIES_OK = False
 
-# Importação condicional para evitar erro quando executado diretamente
-try:
-    from .utils import get_ollama_models as get_ollama_models_subprocess
-    from .yara import executar_analise_yara_completa  # INTEGRAÇÃO COM MÓDULO YARA
-except ImportError:
-    # Fallback quando executado diretamente
-    def get_ollama_models_subprocess():
-        return ["llama3", "llama3.1", "qwen2.5"]
-    
-    def executar_analise_yara_completa(arquivo_pcap):
-        return {
-            'status': 'erro', 
-            'relatorio_texto': '❌ Módulo YARA não disponível'
-        }
+from .utils import get_ollama_models as get_ollama_models_subprocess
 
 
 def detectar_dominios_suspeitos(dados):
@@ -614,77 +599,6 @@ def get_port_service(porta):
     return servicos.get(porta, "Desconhecido")
 
 
-def analisar_com_llm_hibrido(dados_formatados, relatorio_yara, modelo="llama3", host=None, port=None):
-    """Análise híbrida: LLM para comportamento + YARA como evidência complementar"""
-    
-    prompt = f"""
-Você é um especialista em segurança cibernética e análise forense de tráfego de rede especializado em detecção de malware, botnets e ataques APT.
-
-DADOS DE TRÁFEGO PARA ANÁLISE:
-{dados_formatados}
-
-=== RELATÓRIO YARA (EVIDÊNCIAS DE MALWARE) ===
-{relatorio_yara}
-
-EXECUTE UMA ANÁLISE FORENSE DETALHADA:
-
-🔍 CORRELAÇÃO YARA + TRÁFEGO:
-- Se há detecções YARA, correlacione com o tráfego de rede observado
-- Identifique quais conexões de rede podem estar relacionadas ao malware detectado
-- Analise se o comportamento de rede confirma a presença do malware YARA
-
-🚨 DETECÇÃO DE MALWARE E BOTNETS:
-- Identifique padrões de comunicação C&C (Command & Control)
-- Detecte tráfego criptografado suspeito (alta entropia)
-- Analise conexões com IPs externos não autorizados
-- Procure por beaconing (comunicação periódica com servidores remotos)
-- Identifique múltiplas conexões de um host interno para destinos externos
-
-🔍 INDICADORES DE COMPROMISSO (IOCs):
-- Hosts internos iniciando muitas conexões externas simultâneas
-- Tráfego em portas não padronizadas (especialmente > 1024)
-- Comunicação com IPs de países com alta atividade maliciosa
-- Padrões de DNS suspeitos (DGA - Domain Generation Algorithm)
-
-⚔️ TÉCNICAS DE ATAQUE AVANÇADAS:
-- Port scanning e network reconnaissance
-- Data exfiltration (baseado em volume e destino)
-- Lateral movement (propagação interna)
-- Click fraud e ad fraud patterns
-
-📊 ANÁLISE COMPORTAMENTAL:
-- Compare volumes de tráfego por host (identifique outliers)
-- Analise protocolos incomuns ou mal formados
-- Detecte anomalias temporais (rajadas de tráfego)
-
-FORNEÇA UMA RESPOSTA ESTRUTURADA COM:
-
-1. **CLASSIFICAÇÃO DE RISCO** (Crítico/Alto/Médio/Baixo)
-2. **CORRELAÇÃO YARA-TRÁFEGO** (como as detecções se relacionam com o tráfego)
-3. **AMEAÇAS IDENTIFICADAS** (seja específico sobre o tipo de malware/botnet)
-4. **HOSTS COMPROMETIDOS** (liste IPs suspeitos e evidências)
-5. **PADRÕES DE ATAQUE** (descreva a campanha maliciosa)
-6. **AÇÕES IMEDIATAS** (contenção e isolamento)
-7. **INVESTIGAÇÃO FORENSE** (próximos passos para análise)
-8. **REMEDIAÇÃO** (limpeza e fortalecimento)
-
-Seja extremamente detalhado e correlacione as evidências YARA com os padrões de tráfego observados.
-"""
-    
-    try:
-        if host:
-            os.environ.setdefault("OLLAMA_HOST", host)
-        if port:
-            os.environ.setdefault("OLLAMA_PORT", str(port))
-
-        resposta = ollama.chat(
-            model=modelo, messages=[{"role": "user", "content": prompt}]
-        )
-        return resposta["message"]["content"]
-    except Exception as e:
-        return f"Erro na análise LLM híbrida: {str(e)}"
-
-
 def analisar_com_llm(dados_formatados, modelo="llama3", host=None, port=None):
     """Envia dados para análise pelo LLM"""
     prompt = f"""
@@ -845,55 +759,31 @@ def get_ollama_status(host=None, port=None):
 
 
 def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None):
-    """Função principal para análise completa de PCAP com LLM + YARA (híbrida)"""
+    """Função principal para análise completa de PCAP com LLM"""
     try:
-        print(f"[MAIN] 🚀 Iniciando análise híbrida COMPORTAMENTAL+YARA de: {arquivo_pcap}")
-        
-        # 1. ANÁLISE COMPORTAMENTAL (para LLM)
-        print("[MAIN] 📊 Processando pacotes para análise comportamental...")
+        # Processar PCAP
         dados_pacotes = processar_pcap(arquivo_pcap)
 
         if not dados_pacotes:
             raise Exception("Nenhum pacote IP encontrado no arquivo PCAP")
 
+        # Formatar dados para análise
         dados_formatados = formatar_dados_para_analise(dados_pacotes)
 
-        # 2. ANÁLISE YARA COMPLETA (módulo separado)
-        print("[MAIN] 🔍 Executando análise YARA...")
-        relatorio_yara_resultado = executar_analise_yara_completa(arquivo_pcap)
-        relatorio_yara_texto = relatorio_yara_resultado.get('relatorio_texto', '❌ Relatório YARA não disponível')
+        # Analisar com LLM (passando host/port se fornecidos)
+        analise_llm = analisar_com_llm(dados_formatados, modelo, host=host, port=port)
 
-        # 3. ANÁLISE LLM HÍBRIDA (comportamental + relatório YARA)
-        print("[MAIN] 🤖 Executando análise híbrida com LLM...")
-        analise_llm = analisar_com_llm_hibrido(
-            dados_formatados, 
-            relatorio_yara_texto, 
-            modelo, 
-            host=host, 
-            port=port
-        )
-
-        # 4. RESULTADO FINAL
-        total_deteccoes_yara = relatorio_yara_resultado.get('total_deteccoes', 0)
-        arquivos_extraidos = relatorio_yara_resultado.get('arquivos_extraidos', 0)
-        
-        resumo = f"Analisados {len(dados_pacotes)} pacotes | {arquivos_extraidos} arquivos extraídos | {total_deteccoes_yara} detecções YARA | Modelo {modelo}"
-        
-        print(f"[MAIN] ✅ Análise híbrida concluída: {resumo}")
+        # Criar resumo
+        resumo = f"Analisados {len(dados_pacotes)} pacotes com modelo {modelo}"
 
         return {
             "packet_count": len(dados_pacotes),
             "analysis_text": analise_llm,
             "summary": resumo,
             "raw_data": dados_formatados,
-            "yara_report": relatorio_yara_resultado,
-            "yara_detections": total_deteccoes_yara,
-            "extracted_files": arquivos_extraidos,
-            "analysis_type": "hybrid_behavioral_yara"
         }
 
     except Exception as e:
-        print(f"[MAIN] ❌ Erro na análise híbrida: {e}")
         raise Exception(f"Erro na análise: {str(e)}")
 
 

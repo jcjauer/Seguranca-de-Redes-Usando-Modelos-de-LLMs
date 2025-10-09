@@ -68,15 +68,19 @@ def extrair_arquivos_tshark(pcap_file, pasta_destino):
     return total_arquivos
 
 def carregar_regras_yara():
-    """Carrega todas as regras YARA disponíveis"""
+    """Carrega todas as regras YARA disponíveis (excluindo pastas archive)"""
     print("🔍 CARREGANDO REGRAS YARA")
     print("="*50)
     
     pasta_yara = "pcap_web/yara"
     regras_carregadas = []
     
-    # Percorrer todas as subpastas
+    # Percorrer todas as subpastas, excluindo 'archive'
     for root, dirs, files in os.walk(pasta_yara):
+        # Remover 'archive' da lista de diretórios para não percorrê-la
+        if 'archive' in dirs:
+            dirs.remove('archive')
+        
         for file in files:
             if file.endswith('.yar') or file.endswith('.yara'):
                 caminho_regra = os.path.join(root, file)
