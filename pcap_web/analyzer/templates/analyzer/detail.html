@@ -159,6 +159,152 @@
     </div>
 </div>
 
+<!-- 🎯 NOVA SEÇÃO: SISTEMA DE PRECISÃO AVANÇADO -->
+{% if analysis.status == 'completed' and analysis.malware_score is not None %}
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card shadow border-primary">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">
+                    <i class="fas fa-crosshairs"></i> Sistema de Precisão Avançado
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <!-- Score de Malware -->
+                    <div class="col-md-3">
+                        <div class="text-center">
+                            <div class="display-4 mb-2">
+                                {% if analysis.malware_score >= 80 %}
+                                    <span class="text-danger">{{ analysis.malware_score }}</span>
+                                {% elif analysis.malware_score >= 60 %}
+                                    <span class="text-warning">{{ analysis.malware_score }}</span>
+                                {% elif analysis.malware_score >= 40 %}
+                                    <span class="text-info">{{ analysis.malware_score }}</span>
+                                {% else %}
+                                    <span class="text-success">{{ analysis.malware_score }}</span>
+                                {% endif %}
+                                <small class="text-muted">/100</small>
+                            </div>
+                            <p class="lead mb-1">Score de Malware</p>
+                            <span class="badge 
+                                {% if analysis.risk_level == 'CRÍTICO' %}bg-danger
+                                {% elif analysis.risk_level == 'ALTO' %}bg-warning
+                                {% elif analysis.risk_level == 'MÉDIO' %}bg-info
+                                {% elif analysis.risk_level == 'BAIXO' %}bg-secondary
+                                {% else %}bg-success
+                                {% endif %}
+                            ">
+                                {{ analysis.risk_level }}
+                            </span>
+                        </div>
+                    </div>
+                    
+                    <!-- Assinaturas de Malware -->
+                    <div class="col-md-3">
+                        <h6><i class="fas fa-virus"></i> Assinaturas</h6>
+                        {% if analysis.malware_signatures %}
+                            {% for familia, count in analysis.malware_signatures.items %}
+                                {% if count > 0 %}
+                                    <div class="mb-1">
+                                        <span class="badge bg-danger">{{ familia }}</span>
+                                        <small class="text-muted">{{ count }} detecções</small>
+                                    </div>
+                                {% endif %}
+                            {% endfor %}
+                        {% else %}
+                            <small class="text-muted">Nenhuma assinatura detectada</small>
+                        {% endif %}
+                    </div>
+                    
+                    <!-- Padrões de Rede -->
+                    <div class="col-md-3">
+                        <h6><i class="fas fa-network-wired"></i> Padrões de Rede</h6>
+                        {% if analysis.network_patterns %}
+                            {% for padrao, count in analysis.network_patterns.items %}
+                                <div class="mb-1">
+                                    <small class="text-capitalize">{{ padrao|title }}:</small>
+                                    <span class="badge 
+                                        {% if count > 10 %}bg-danger
+                                        {% elif count > 5 %}bg-warning
+                                        {% elif count > 0 %}bg-info
+                                        {% else %}bg-success
+                                        {% endif %}
+                                    ">{{ count }}</span>
+                                </div>
+                            {% endfor %}
+                        {% else %}
+                            <small class="text-muted">Nenhum padrão suspeito</small>
+                        {% endif %}
+                    </div>
+                    
+                    <!-- Threat Intelligence -->
+                    <div class="col-md-3">
+                        <h6><i class="fas fa-shield-alt"></i> Threat Intel</h6>
+                        {% if analysis.threat_intelligence %}
+                            <div class="mb-1">
+                                <small>IPs maliciosos:</small>
+                                <span class="badge bg-danger">{{ analysis.threat_intelligence.malicious_ips_count|default:0 }}</span>
+                            </div>
+                            <div class="mb-1">
+                                <small>Domínios suspeitos:</small>
+                                <span class="badge bg-warning">{{ analysis.threat_intelligence.malicious_domains_count|default:0 }}</span>
+                            </div>
+                            <div class="mb-1">
+                                <small>Países suspeitos:</small>
+                                <span class="badge bg-info">{{ analysis.threat_intelligence.suspicious_countries_count|default:0 }}</span>
+                            </div>
+                        {% else %}
+                            <small class="text-muted">Dados não disponíveis</small>
+                        {% endif %}
+                    </div>
+                </div>
+                
+                <!-- Recomendação de Segurança -->
+                <div class="row mt-3">
+                    <div class="col-12">
+                        <div class="alert 
+                            {% if analysis.malware_score >= 80 %}alert-danger
+                            {% elif analysis.malware_score >= 60 %}alert-warning
+                            {% elif analysis.malware_score >= 40 %}alert-info
+                            {% else %}alert-success
+                            {% endif %}
+                        " role="alert">
+                            <h6 class="alert-heading">
+                                {% if analysis.malware_score >= 80 %}
+                                    🚨 AÇÃO IMEDIATA NECESSÁRIA
+                                {% elif analysis.malware_score >= 60 %}
+                                    ⚠️ AÇÃO URGENTE RECOMENDADA
+                                {% elif analysis.malware_score >= 40 %}
+                                    ⚡ ATENÇÃO REQUERIDA
+                                {% elif analysis.malware_score >= 20 %}
+                                    👁️ MONITORAMENTO CONTÍNUO
+                                {% else %}
+                                    ✅ TRÁFEGO NORMAL
+                                {% endif %}
+                            </h6>
+                            <p class="mb-0">
+                                {% if analysis.malware_score >= 80 %}
+                                    Isolar hosts comprometidos, bloquear IPs externos, iniciar investigação forense completa
+                                {% elif analysis.malware_score >= 60 %}
+                                    Monitorar hosts suspeitos, implementar regras de firewall, análise detalhada de logs
+                                {% elif analysis.malware_score >= 40 %}
+                                    Investigar anomalias detectadas, aumentar monitoramento, revisar políticas de segurança
+                                {% elif analysis.malware_score >= 20 %}
+                                    Continuar observando padrões, implementar alertas automáticos
+                                {% else %}
+                                    Manter monitoramento regular da rede, tráfego dentro dos padrões
+                                {% endif %}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <!-- Analysis Status for Active Analysis -->
 {% if analysis.status == 'processing' or analysis.status == 'pending' %}
 <div class="row mb-4">
@@ -236,25 +382,7 @@
     </div>
 </div>
 
-<!-- Summary if available -->
-{% if analysis.analysis_summary %}
-<div class="row mb-4">
-    <div class="col-12">
-        <div class="card shadow">
-            <div class="card-header">
-                <h5 class="mb-0">
-                    <i class="fas fa-clipboard-list"></i> Resumo Executivo
-                </h5>
-            </div>
-            <div class="card-body">
-                <div class="alert alert-info">
-                    {{ analysis.analysis_summary }}
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-{% endif %}
+
 {% endif %}
 
 <!-- Action Panel -->
