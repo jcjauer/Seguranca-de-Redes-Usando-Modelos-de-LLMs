@@ -119,7 +119,6 @@ def delete_analysis(request, analysis_id):
     messages.success(request, f"Análise de {filename} deletada com sucesso.")
     return redirect("index")
 
-
 def process_pcap_analysis(analysis_id, host=None, port=None):
     """Processa a análise PCAP em background com sistema de precisão avançado"""
     analysis = None

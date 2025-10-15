@@ -15,11 +15,114 @@ sys.path.append(parent_dir)
 try:
     from scapy.all import rdpcap, IP, IPv6, TCP, UDP, Raw, DNS, DNSQR, ARP, Ether
     import ollama
+
+    DEPENDENCIES_OK = True
 except ImportError as e:
     print(f"Erro ao importar dependências: {e}")
     print("Certifique-se de que scapy e ollama estão instalados")
+    DEPENDENCIES_OK = False
 
-from .utils import get_ollama_models as get_ollama_models_subprocess
+# Importação condicional para evitar erro quando executado diretamente
+try:
+    from .utils import get_ollama_models as get_ollama_models_subprocess
+    from .yara import executar_analise_yara_completa  # INTEGRAÇÃO COM MÓDULO YARA
+except ImportError:
+    # Fallback quando executado diretamente
+    def get_ollama_models_subprocess():
+        return ["llama3", "llama3.1", "qwen2.5"]
+
+    def executar_analise_yara_completa(arquivo_pcap):
+        return {"status": "erro", "relatorio_texto": "❌ Módulo YARA não disponível"}
+
+
+def detectar_dominios_suspeitos(dados):
+    """Detecta domínios suspeitos, user-agents maliciosos e padrões de fraude"""
+    suspeitos = {
+        "dominios_suspeitos": [],
+        "user_agents_maliciosos": [],
+        "click_fraud_patterns": [],
+        "short_urls": [],
+        "asian_domains": [],
+    }
+
+    # Lista de domínios conhecidos por atividade maliciosa (baseado no seu exemplo)
+    dominios_maliciosos = [
+        "yl.liufen.com",
+        "hqs9.cnzz.com",
+        "doudouguo.com",
+        "dw156.tk",
+        "lckj77.com",
+        "cnzz.com",
+    ]
+
+    # Padrões de User-Agent suspeitos
+    user_agents_suspeitos = [
+        "Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.1; Trident/4.0",  # Antigo/desatualizado
+        "Mozilla/5.0 (Windows NT 6.1)",  # Muito genérico
+    ]
+
+    # Padrões de URLs de fraude de clique
+    click_fraud_keywords = [
+        "/stat.htm",
+        "/ck.aspx",
+        "/sync_pos.htm",
+        "cnzz_core_c.php",
+        "repeatip=",
+        "showp=",
+        "rnd=",
+    ]
+
+    for pkt in dados:
+        # Análise de DNS queries
+        if pkt.get("dns_query"):
+            query = pkt["dns_query"].lower()
+
+            # Verificar domínios maliciosos conhecidos
+            for dominio in dominios_maliciosos:
+                if dominio in query:
+                    suspeitos["dominios_suspeitos"].append(
+                        {
+                            "query": query,
+                            "src_ip": pkt["src_ip"],
+                            "tipo": "dominio_malicioso_conhecido",
+                        }
+                    )
+
+            # Detectar domínios com TLD suspeitos (.tk, .ml, .ga, etc.)
+            if any(tld in query for tld in [".tk", ".ml", ".ga", ".cf", ".xyz"]):
+                suspeitos["dominios_suspeitos"].append(
+                    {"query": query, "src_ip": pkt["src_ip"], "tipo": "tld_suspeito"}
+                )
+
+            # Detectar domínios asiáticos suspeitos
+            if any(
+                keyword in query for keyword in ["china", "asia", ".cn", ".hk", ".tw"]
+            ):
+                suspeitos["asian_domains"].append(query)
+
+        # Análise de payload HTTP (se disponível em Raw data)
+        if (
+            pkt.get("entropy") and pkt["entropy"] < 4.0
+        ):  # Baixa entropia = texto legível
+            # Simular detecção de conteúdo HTTP suspeito
+            # Em implementação real, você analisaria o payload do pacote
+            src_port = pkt.get("src_port", 0)
+            dst_port = pkt.get("dst_port", 0)
+
+            # Portas HTTP/HTTPS
+            if src_port in [80, 443, 8080] or dst_port in [80, 443, 8080]:
+                # Aqui você poderia analisar o payload real do HTTP
+                # Por enquanto, vamos simular baseado nos padrões que você mostrou
+                suspeitos["click_fraud_patterns"].append(
+                    {
+                        "src_ip": pkt["src_ip"],
+                        "dst_ip": pkt["dst_ip"],
+                        "port": dst_port,
+                        "suspeita": "trafego_http_suspeito",
+                    }
+                )
+
+    return suspeitos
 
 
 def detectar_dominios_suspeitos(dados):
@@ -1031,6 +1134,79 @@ def get_port_service(porta):
     return servicos.get(porta, "Desconhecido")
 
 
+def analisar_com_llm_hibrido(
+    dados_formatados, relatorio_yara, modelo="llama3", host=None, port=None
+):
+    """Análise híbrida: LLM para comportamento + YARA como evidência complementar"""
+
+    prompt = f"""
+Você é um especialista em segurança cibernética e análise forense de tráfego de rede especializado em detecção de malware, botnets e ataques APT.
+
+DADOS DE TRÁFEGO PARA ANÁLISE:
+{dados_formatados}
+
+=== RELATÓRIO YARA (EVIDÊNCIAS DE MALWARE) ===
+{relatorio_yara}
+
+EXECUTE UMA ANÁLISE FORENSE DETALHADA:
+
+🔍 CORRELAÇÃO YARA + TRÁFEGO:
+- Se há detecções YARA, correlacione com o tráfego de rede observado
+- Identifique quais conexões de rede podem estar relacionadas ao malware detectado
+- Analise se o comportamento de rede confirma a presença do malware YARA
+
+🚨 DETECÇÃO DE MALWARE E BOTNETS:
+- Identifique padrões de comunicação C&C (Command & Control)
+- Detecte tráfego criptografado suspeito (alta entropia)
+- Analise conexões com IPs externos não autorizados
+- Procure por beaconing (comunicação periódica com servidores remotos)
+- Identifique múltiplas conexões de um host interno para destinos externos
+
+🔍 INDICADORES DE COMPROMISSO (IOCs):
+- Hosts internos iniciando muitas conexões externas simultâneas
+- Tráfego em portas não padronizadas (especialmente > 1024)
+- Comunicação com IPs de países com alta atividade maliciosa
+- Padrões de DNS suspeitos (DGA - Domain Generation Algorithm)
+
+⚔️ TÉCNICAS DE ATAQUE AVANÇADAS:
+- Port scanning e network reconnaissance
+- Data exfiltration (baseado em volume e destino)
+- Lateral movement (propagação interna)
+- Click fraud e ad fraud patterns
+
+📊 ANÁLISE COMPORTAMENTAL:
+- Compare volumes de tráfego por host (identifique outliers)
+- Analise protocolos incomuns ou mal formados
+- Detecte anomalias temporais (rajadas de tráfego)
+
+FORNEÇA UMA RESPOSTA ESTRUTURADA COM:
+
+1. **CLASSIFICAÇÃO DE RISCO** (Crítico/Alto/Médio/Baixo)
+2. **CORRELAÇÃO YARA-TRÁFEGO** (como as detecções se relacionam com o tráfego)
+3. **AMEAÇAS IDENTIFICADAS** (seja específico sobre o tipo de malware/botnet)
+4. **HOSTS COMPROMETIDOS** (liste IPs suspeitos e evidências)
+5. **PADRÕES DE ATAQUE** (descreva a campanha maliciosa)
+6. **AÇÕES IMEDIATAS** (contenção e isolamento)
+7. **INVESTIGAÇÃO FORENSE** (próximos passos para análise)
+8. **REMEDIAÇÃO** (limpeza e fortalecimento)
+
+Seja extremamente detalhado e correlacione as evidências YARA com os padrões de tráfego observados.
+"""
+
+    try:
+        if host:
+            os.environ.setdefault("OLLAMA_HOST", host)
+        if port:
+            os.environ.setdefault("OLLAMA_PORT", str(port))
+
+        resposta = ollama.chat(
+            model=modelo, messages=[{"role": "user", "content": prompt}]
+        )
+        return resposta["message"]["content"]
+    except Exception as e:
+        return f"Erro na análise LLM híbrida: {str(e)}"
+
+
 def analisar_com_llm(dados_formatados, modelo="llama3", host=None, port=None):
     """Envia dados para análise pelo LLM"""
     prompt = f"""
@@ -1191,9 +1367,14 @@ def get_ollama_status(host=None, port=None):
 
 
 def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None):
-    """Função principal para análise completa de PCAP com LLM e sistema de precisão avançado"""
+    """Função principal para análise completa de PCAP com LLM + YARA (híbrida) e sistema de precisão avançado"""
     try:
-        # FASE 1: Processamento básico do PCAP
+        print(
+            f"[MAIN] 🚀 Iniciando análise híbrida COMPORTAMENTAL+YARA de: {arquivo_pcap}"
+        )
+
+        # 1. ANÁLISE COMPORTAMENTAL (para LLM)
+        print("[MAIN] 📊 Processando pacotes para análise comportamental...")
         dados_pacotes = processar_pcap(arquivo_pcap)
 
         if not dados_pacotes:
@@ -1234,6 +1415,16 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None):
 
         # FASE 7: Formatar dados para análise LLM
         dados_formatados = formatar_dados_para_analise(dados_pacotes)
+        
+        # FASE 8: ANÁLISE YARA COMPLETA (módulo separado)
+        print("🔍 Executando análise YARA...")
+        try:
+            relatorio_yara_resultado = executar_analise_yara_completa(arquivo_pcap)
+            relatorio_yara_texto = relatorio_yara_resultado.get('relatorio_texto', '❌ Relatório YARA não disponível')
+        except Exception as e:
+            print(f"⚠️ Análise YARA falhou: {e}")
+            relatorio_yara_resultado = {'total_deteccoes': 0, 'arquivos_extraidos': 0}
+            relatorio_yara_texto = '❌ Análise YARA não disponível'
 
         # Adicionar contexto avançado para o LLM
         contexto_avancado = f"""
@@ -1260,41 +1451,55 @@ ANÁLISE COMPORTAMENTAL:
 - Beaconing detectado: {len(comportamento_temporal['beaconing_intervals'])} padrões
 - Burst patterns: {len(comportamento_temporal['burst_patterns'])} eventos
 
+ANÁLISE YARA:
+{relatorio_yara_texto}
+
 Por favor, analise estes dados considerando o contexto de segurança avançado fornecido.
 """
+        
+        # FASE 9: ANÁLISE LLM HÍBRIDA (comportamental + relatório YARA)
+        print("🤖 Executando análise híbrida com LLM...")
+        try:
+            analise_llm = analisar_com_llm_hibrido(
+                dados_formatados, 
+                relatorio_yara_texto, 
+                modelo, 
+                host=host, 
+                port=port
+            )
+        except:
+            # Fallback para análise normal se a híbrida falhar
+            analise_llm = analisar_com_llm(dados_formatados + contexto_avancado, modelo, host=host, port=port)
 
-        # FASE 8: Análise com LLM
-        print("🤖 Iniciando análise com LLM...")
-        analise_llm = analisar_com_llm(
-            dados_formatados + contexto_avancado, modelo, host=host, port=port
-        )
-
-        # FASE 9: Compilar resultado final
+        # FASE 10: RESULTADO FINAL COMBINADO
+        total_deteccoes_yara = relatorio_yara_resultado.get('total_deteccoes', 0)
+        arquivos_extraidos = relatorio_yara_resultado.get('arquivos_extraidos', 0)
+        
         resumo = f"""
 📋 ANÁLISE COMPLETA FINALIZADA
 ├─ Pacotes analisados: {len(dados_pacotes)}
 ├─ Score de malware: {scoring_result['score']}/100 ({scoring_result['nivel']})
 ├─ Assinaturas detectadas: {sum(len(sigs) for sigs in assinaturas_malware.values())}
 ├─ IOCs encontrados: {len(threat_intel['malicious_ips']) + len(threat_intel['malicious_domains'])}
+├─ Detecções YARA: {total_deteccoes_yara}
+├─ Arquivos extraídos: {arquivos_extraidos}
 └─ Modelo LLM: {modelo}
 """
+
+        print(f"✅ Análise híbrida concluída: Score {scoring_result['score']}/100 | {total_deteccoes_yara} detecções YARA")
 
         # Determinar indicadores de ameaça únicos
         threat_indicators = []
         for familia, assinaturas in assinaturas_malware.items():
             if assinaturas:
-                threat_indicators.extend(
-                    [f"{familia}_{i}" for i in range(len(assinaturas))]
-                )
-
+                threat_indicators.extend([f"{familia}_{i}" for i in range(len(assinaturas))])
+        
         # Compilar padrões de rede únicos
         network_patterns = {
-            "conexoes_multiplas": len(
-                padroes_suspeitos.get("hosts_com_multiplas_conexoes", {})
-            ),
+            "conexoes_multiplas": len(padroes_suspeitos.get("hosts_com_multiplas_conexoes", {})),
             "port_scanning": len(padroes_suspeitos.get("port_scanning", {})),
             "flood_attacks": len(padroes_suspeitos.get("flood_attacks", {})),
-            "comunicacao_c2": len(padroes_suspeitos.get("comunicacao_c2", [])),
+            "comunicacao_c2": len(padroes_suspeitos.get("comunicacao_c2", []))
         }
 
         return {
@@ -1302,36 +1507,37 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
             "analysis_text": analise_llm,
             "summary": resumo,
             "raw_data": dados_formatados,
-            # NOVOS CAMPOS PARA MAIOR PRECISÃO
-            "malware_score": scoring_result["score"],
-            "risk_level": scoring_result["nivel"],
-            "threat_indicators": threat_indicators[
-                :50
-            ],  # Limitar para não sobrecarregar
+            
+            # CAMPOS DE PRECISÃO AVANÇADA
+            "malware_score": scoring_result['score'],
+            "risk_level": scoring_result['nivel'],
+            "threat_indicators": threat_indicators[:50],  # Limitar para não sobrecarregar
             "network_patterns": network_patterns,
-            "malware_signatures": {
-                k: len(v) for k, v in assinaturas_malware.items() if v
-            },
+            "malware_signatures": {k: len(v) for k, v in assinaturas_malware.items() if v},
             "temporal_analysis": {
-                "beaconing_count": len(comportamento_temporal["beaconing_intervals"]),
-                "burst_count": len(comportamento_temporal["burst_patterns"]),
-                "periodic_patterns": len(
-                    comportamento_temporal.get("periodic_communication", [])
-                ),
+                "beaconing_count": len(comportamento_temporal['beaconing_intervals']),
+                "burst_count": len(comportamento_temporal['burst_patterns']),
+                "periodic_patterns": len(comportamento_temporal.get('periodic_communication', []))
             },
             "threat_intelligence": {
-                "malicious_ips_count": len(threat_intel["malicious_ips"]),
-                "malicious_domains_count": len(threat_intel["malicious_domains"]),
-                "suspicious_countries_count": len(threat_intel["suspicious_countries"]),
-                "top_threats": threat_intel["malicious_ips"][
-                    :10
-                ],  # Top 10 para análise
+                "malicious_ips_count": len(threat_intel['malicious_ips']),
+                "malicious_domains_count": len(threat_intel['malicious_domains']),
+                "suspicious_countries_count": len(threat_intel['suspicious_countries']),
+                "top_threats": threat_intel['malicious_ips'][:10]  # Top 10 para análise
             },
+            
+            # CAMPOS YARA (do colaborador)
+            "yara_detections": total_deteccoes_yara,
+            "extracted_files": arquivos_extraidos,
+            "yara_report": relatorio_yara_texto
         }
 
     except Exception as e:
         print(f"❌ Erro na análise: {str(e)}")
         raise Exception(f"Erro na análise avançada: {str(e)}")
+
+    except Exception as e:
+        raise Exception(f"Erro na análise: {str(e)}")
 
 
 if __name__ == "__main__":

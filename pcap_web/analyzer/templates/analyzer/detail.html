@@ -382,7 +382,27 @@
     </div>
 </div>
 
+<!-- Summary if available -->
+{% if analysis.analysis_summary %}
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-clipboard-list"></i> Resumo Executivo
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info">
+                    {{ analysis.analysis_summary }}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 
+{# Bloco para exibir o relatório YARA extraído do resultado #}
 {% endif %}
 
 <!-- Action Panel -->
