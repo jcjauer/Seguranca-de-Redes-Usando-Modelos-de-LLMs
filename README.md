@@ -86,7 +86,7 @@ source venv/bin/activate
 ### 3. Instale as dependências
 ```bash
 python.exe -m pip install --upgrade pip
-pip install -r requirements.txt
+pip install scapy ollama django pillow requests
 ```
 
 ### 4. Configure o Ollama:
