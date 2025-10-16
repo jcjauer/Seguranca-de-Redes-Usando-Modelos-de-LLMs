@@ -25,7 +25,9 @@ except ImportError as e:
 # Importação condicional para evitar erro quando executado diretamente
 try:
     from .utils import get_ollama_models as get_ollama_models_subprocess
-    from .yara import executar_analise_yara_completa  # INTEGRAÇÃO COM MÓDULO YARA
+    from .yara_detector import (
+        executar_analise_yara_completa,
+    )  # INTEGRAÇÃO COM MÓDULO YARA
 except ImportError:
     # Fallback quando executado diretamente
     def get_ollama_models_subprocess():
@@ -1415,16 +1417,18 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None):
 
         # FASE 7: Formatar dados para análise LLM
         dados_formatados = formatar_dados_para_analise(dados_pacotes)
-        
+
         # FASE 8: ANÁLISE YARA COMPLETA (módulo separado)
         print("🔍 Executando análise YARA...")
         try:
             relatorio_yara_resultado = executar_analise_yara_completa(arquivo_pcap)
-            relatorio_yara_texto = relatorio_yara_resultado.get('relatorio_texto', '❌ Relatório YARA não disponível')
+            relatorio_yara_texto = relatorio_yara_resultado.get(
+                "relatorio_texto", "❌ Relatório YARA não disponível"
+            )
         except Exception as e:
             print(f"⚠️ Análise YARA falhou: {e}")
-            relatorio_yara_resultado = {'total_deteccoes': 0, 'arquivos_extraidos': 0}
-            relatorio_yara_texto = '❌ Análise YARA não disponível'
+            relatorio_yara_resultado = {"total_deteccoes": 0, "arquivos_extraidos": 0}
+            relatorio_yara_texto = "❌ Análise YARA não disponível"
 
         # Adicionar contexto avançado para o LLM
         contexto_avancado = f"""
@@ -1456,25 +1460,23 @@ ANÁLISE YARA:
 
 Por favor, analise estes dados considerando o contexto de segurança avançado fornecido.
 """
-        
+
         # FASE 9: ANÁLISE LLM HÍBRIDA (comportamental + relatório YARA)
         print("🤖 Executando análise híbrida com LLM...")
         try:
             analise_llm = analisar_com_llm_hibrido(
-                dados_formatados, 
-                relatorio_yara_texto, 
-                modelo, 
-                host=host, 
-                port=port
+                dados_formatados, relatorio_yara_texto, modelo, host=host, port=port
             )
         except:
             # Fallback para análise normal se a híbrida falhar
-            analise_llm = analisar_com_llm(dados_formatados + contexto_avancado, modelo, host=host, port=port)
+            analise_llm = analisar_com_llm(
+                dados_formatados + contexto_avancado, modelo, host=host, port=port
+            )
 
         # FASE 10: RESULTADO FINAL COMBINADO
-        total_deteccoes_yara = relatorio_yara_resultado.get('total_deteccoes', 0)
-        arquivos_extraidos = relatorio_yara_resultado.get('arquivos_extraidos', 0)
-        
+        total_deteccoes_yara = relatorio_yara_resultado.get("total_deteccoes", 0)
+        arquivos_extraidos = relatorio_yara_resultado.get("arquivos_extraidos", 0)
+
         resumo = f"""
 📋 ANÁLISE COMPLETA FINALIZADA
 ├─ Pacotes analisados: {len(dados_pacotes)}
@@ -1486,20 +1488,26 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
 └─ Modelo LLM: {modelo}
 """
 
-        print(f"✅ Análise híbrida concluída: Score {scoring_result['score']}/100 | {total_deteccoes_yara} detecções YARA")
+        print(
+            f"✅ Análise híbrida concluída: Score {scoring_result['score']}/100 | {total_deteccoes_yara} detecções YARA"
+        )
 
         # Determinar indicadores de ameaça únicos
         threat_indicators = []
         for familia, assinaturas in assinaturas_malware.items():
             if assinaturas:
-                threat_indicators.extend([f"{familia}_{i}" for i in range(len(assinaturas))])
-        
+                threat_indicators.extend(
+                    [f"{familia}_{i}" for i in range(len(assinaturas))]
+                )
+
         # Compilar padrões de rede únicos
         network_patterns = {
-            "conexoes_multiplas": len(padroes_suspeitos.get("hosts_com_multiplas_conexoes", {})),
+            "conexoes_multiplas": len(
+                padroes_suspeitos.get("hosts_com_multiplas_conexoes", {})
+            ),
             "port_scanning": len(padroes_suspeitos.get("port_scanning", {})),
             "flood_attacks": len(padroes_suspeitos.get("flood_attacks", {})),
-            "comunicacao_c2": len(padroes_suspeitos.get("comunicacao_c2", []))
+            "comunicacao_c2": len(padroes_suspeitos.get("comunicacao_c2", [])),
         }
 
         return {
@@ -1507,29 +1515,35 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
             "analysis_text": analise_llm,
             "summary": resumo,
             "raw_data": dados_formatados,
-            
             # CAMPOS DE PRECISÃO AVANÇADA
-            "malware_score": scoring_result['score'],
-            "risk_level": scoring_result['nivel'],
-            "threat_indicators": threat_indicators[:50],  # Limitar para não sobrecarregar
+            "malware_score": scoring_result["score"],
+            "risk_level": scoring_result["nivel"],
+            "threat_indicators": threat_indicators[
+                :50
+            ],  # Limitar para não sobrecarregar
             "network_patterns": network_patterns,
-            "malware_signatures": {k: len(v) for k, v in assinaturas_malware.items() if v},
+            "malware_signatures": {
+                k: len(v) for k, v in assinaturas_malware.items() if v
+            },
             "temporal_analysis": {
-                "beaconing_count": len(comportamento_temporal['beaconing_intervals']),
-                "burst_count": len(comportamento_temporal['burst_patterns']),
-                "periodic_patterns": len(comportamento_temporal.get('periodic_communication', []))
+                "beaconing_count": len(comportamento_temporal["beaconing_intervals"]),
+                "burst_count": len(comportamento_temporal["burst_patterns"]),
+                "periodic_patterns": len(
+                    comportamento_temporal.get("periodic_communication", [])
+                ),
             },
             "threat_intelligence": {
-                "malicious_ips_count": len(threat_intel['malicious_ips']),
-                "malicious_domains_count": len(threat_intel['malicious_domains']),
-                "suspicious_countries_count": len(threat_intel['suspicious_countries']),
-                "top_threats": threat_intel['malicious_ips'][:10]  # Top 10 para análise
+                "malicious_ips_count": len(threat_intel["malicious_ips"]),
+                "malicious_domains_count": len(threat_intel["malicious_domains"]),
+                "suspicious_countries_count": len(threat_intel["suspicious_countries"]),
+                "top_threats": threat_intel["malicious_ips"][
+                    :10
+                ],  # Top 10 para análise
             },
-            
             # CAMPOS YARA (do colaborador)
             "yara_detections": total_deteccoes_yara,
             "extracted_files": arquivos_extraidos,
-            "yara_report": relatorio_yara_texto
+            "yara_report": relatorio_yara_texto,
         }
 
     except Exception as e:
