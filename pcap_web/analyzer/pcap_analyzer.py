@@ -127,96 +127,6 @@ def detectar_dominios_suspeitos(dados):
     return suspeitos
 
 
-def detectar_dominios_suspeitos(dados):
-    """Detecta domínios suspeitos, user-agents maliciosos e padrões de fraude"""
-    suspeitos = {
-        "dominios_suspeitos": [],
-        "user_agents_maliciosos": [],
-        "click_fraud_patterns": [],
-        "short_urls": [],
-        "asian_domains": [],
-    }
-
-    # Lista de domínios conhecidos por atividade maliciosa (baseado no seu exemplo)
-    dominios_maliciosos = [
-        "yl.liufen.com",
-        "hqs9.cnzz.com",
-        "doudouguo.com",
-        "dw156.tk",
-        "lckj77.com",
-        "cnzz.com",
-    ]
-
-    # Padrões de User-Agent suspeitos
-    user_agents_suspeitos = [
-        "Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.1; Trident/4.0",  # Antigo/desatualizado
-        "Mozilla/5.0 (Windows NT 6.1)",  # Muito genérico
-    ]
-
-    # Padrões de URLs de fraude de clique
-    click_fraud_keywords = [
-        "/stat.htm",
-        "/ck.aspx",
-        "/sync_pos.htm",
-        "cnzz_core_c.php",
-        "repeatip=",
-        "showp=",
-        "rnd=",
-    ]
-
-    for pkt in dados:
-        # Análise de DNS queries
-        if pkt.get("dns_query"):
-            query = pkt["dns_query"].lower()
-
-            # Verificar domínios maliciosos conhecidos
-            for dominio in dominios_maliciosos:
-                if dominio in query:
-                    suspeitos["dominios_suspeitos"].append(
-                        {
-                            "query": query,
-                            "src_ip": pkt["src_ip"],
-                            "tipo": "dominio_malicioso_conhecido",
-                        }
-                    )
-
-            # Detectar domínios com TLD suspeitos (.tk, .ml, .ga, etc.)
-            if any(tld in query for tld in [".tk", ".ml", ".ga", ".cf", ".xyz"]):
-                suspeitos["dominios_suspeitos"].append(
-                    {"query": query, "src_ip": pkt["src_ip"], "tipo": "tld_suspeito"}
-                )
-
-            # Detectar domínios asiáticos suspeitos
-            if any(
-                keyword in query for keyword in ["china", "asia", ".cn", ".hk", ".tw"]
-            ):
-                suspeitos["asian_domains"].append(query)
-
-        # Análise de payload HTTP (se disponível em Raw data)
-        if (
-            pkt.get("entropy") and pkt["entropy"] < 4.0
-        ):  # Baixa entropia = texto legível
-            # Simular detecção de conteúdo HTTP suspeito
-            # Em implementação real, você analisaria o payload do pacote
-            src_port = pkt.get("src_port", 0)
-            dst_port = pkt.get("dst_port", 0)
-
-            # Portas HTTP/HTTPS
-            if src_port in [80, 443, 8080] or dst_port in [80, 443, 8080]:
-                # analisando o payload real do HTTP
-                # simular baseado nos padrões mostrados
-                suspeitos["click_fraud_patterns"].append(
-                    {
-                        "src_ip": pkt["src_ip"],
-                        "dst_ip": pkt["dst_ip"],
-                        "port": dst_port,
-                        "suspeita": "trafego_http_suspeito",
-                    }
-                )
-
-    return suspeitos
-
-
 def calcular_score_malware(dados, padroes_suspeitos, dominios_suspeitos):
     """Calcula score de probabilidade de malware (0-100) baseado em evidências"""
     score = 0
@@ -351,8 +261,7 @@ def calcular_score_malware(dados, padroes_suspeitos, dominios_suspeitos):
     return {
         "score": score,
         "nivel": get_risk_level(score),
-        "evidencias": evidencias,
-        "recomendacao": get_recommendation(score),
+        "evidencias": evidencias
     }
 
 
@@ -368,20 +277,6 @@ def get_risk_level(score):
         return "BAIXO"
     else:
         return "MÍNIMO"
-
-
-def get_recommendation(score):
-    """Retorna recomendação baseada no score"""
-    if score >= 80:
-        return "🚨 AÇÃO IMEDIATA: Isolar hosts comprometidos, bloquear IPs externos, iniciar investigação forense completa"
-    elif score >= 60:
-        return "⚠️ AÇÃO URGENTE: Monitorar hosts suspeitos, implementar regras de firewall, análise detalhada de logs"
-    elif score >= 40:
-        return "⚡ ATENÇÃO: Investigar anomalias detectadas, aumentar monitoramento, revisar políticas de segurança"
-    elif score >= 20:
-        return "👁️ MONITORAMENTO: Continuar observando padrões, implementar alertas automáticos"
-    else:
-        return "✅ NORMAL: Manter monitoramento regular da rede, tráfego dentro dos padrões"
 
 
 def detectar_assinaturas_malware(dados):
@@ -1438,7 +1333,6 @@ RESUMO EXECUTIVO:
 - Total de pacotes: {len(dados_pacotes)}
 - Score de malware: {scoring_result['score']}/100
 - Nível de risco: {scoring_result['nivel']}
-- Recomendação: {scoring_result['recomendacao']}
 
 EVIDÊNCIAS ENCONTRADAS:
 {chr(10).join(f"• {evidencia}" for evidencia in scoring_result['evidencias'])}
