@@ -561,6 +561,9 @@ def calcular_entropia(data):
     return entropia
 
 
+############################################# FUNÇÃO DE PROCESSAMENTO PCAP #####################################################
+
+
 def processar_pcap(arquivo_pcap):
     """Processa arquivo PCAP e extrai informações dos pacotes"""
     try:
