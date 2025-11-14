@@ -107,7 +107,7 @@ def carregar_regras_yara_com_cache():
     global YARA_RULES, YARA_ENABLED, YARA_CACHE_TIMESTAMP
 
     pasta_yara = os.path.abspath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "yara")
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "yara_rules")
     )
 
     try:
