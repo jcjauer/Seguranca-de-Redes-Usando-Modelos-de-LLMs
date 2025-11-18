@@ -24,6 +24,11 @@ class PCAPAnalysis(models.Model):
         max_length=255, default="127.0.0.1", help_text="Host/IP do serviço LLM"
     )
     llm_port = models.IntegerField(default=11434, help_text="Porta do serviço LLM")
+    analysis_mode = models.CharField(
+        max_length=20,
+        default="full",
+        help_text="Modo de análise: full, llm_heuristics, llm_yara, llm_only, yara_only"
+    )
 
     # Resultados da análise
     packet_count = models.IntegerField(null=True, blank=True)

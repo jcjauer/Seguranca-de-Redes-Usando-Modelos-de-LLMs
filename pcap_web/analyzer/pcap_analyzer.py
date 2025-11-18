@@ -7,6 +7,8 @@ import math
 import os
 import sys
 import logging
+import struct
+import csv
 from collections import defaultdict
 
 # Configurar o logger
@@ -20,7 +22,7 @@ logger = logging.getLogger(__name__)
 # sys.path.append(parent_dir)
 
 try:
-    from scapy.all import rdpcap, IP, IPv6, TCP, UDP, Raw, DNS, DNSQR, ARP, Ether
+    from scapy.all import rdpcap, IP, IPv6, TCP, UDP, Raw, DNS, ARP, Ether
     import ollama
 
     DEPENDENCIES_OK = True
@@ -78,6 +80,30 @@ class Config:
     FLOOD_HIGH = 5000
     FLOOD_CRITICAL = 10000
 
+    # DDoS Específico
+    SYN_FLOOD_MIN_PACKETS = 100
+    SYN_FLOOD_ACK_RATIO = 0.1  # < 10% de ACKs indica SYN Flood
+    UDP_FLOOD_THRESHOLD = 500
+    UDP_FLOOD_DNS_THRESHOLD = 1000
+    ICMP_FLOOD_LOW = 200
+    ICMP_FLOOD_HIGH = 1000
+    ACK_FLOOD_THRESHOLD = 300
+    HTTP_SLOWLORIS_CONNECTIONS = 50
+    ARP_SPOOFING_THRESHOLD = 50
+    DNS_AMPLIFICATION_MIN_SIZE = 512  # bytes
+    DNS_AMPLIFICATION_MIN_COUNT = 10
+    DNS_AMPLIFICATION_MIN_BYTES = 10000
+    FRAGMENT_ATTACK_SMALL_PKT_SIZE = 100
+    FRAGMENT_ATTACK_THRESHOLD = 500
+    DDOS_DISTRIBUTED_SOURCES = 10  # Número mínimo de fontes para DDoS distribuído
+    
+    # Anomalias de Tráfego
+    SPIKE_MULTIPLIER = 10  # Tráfego 10x acima da média é spike
+    BANDWIDTH_THRESHOLD_MBPS = 100  # 100 Mbps é alto
+    CONNECTION_TIMEOUT_SECONDS = 300  # 5 minutos sem atividade
+    PACKET_SIZE_ANOMALY_MIN = 64  # Menor que MTU suspeito
+    PACKET_SIZE_ANOMALY_MAX = 1500  # Maior que MTU padrão
+
     # Comunicação C2
     C2_MIN_ENTROPY = 7.5  # Mais restritivo
     C2_COUNT_LOW = 5
@@ -88,9 +114,6 @@ class Config:
     DOMAINS_SUSPICIOUS_COUNT = 3
     DOMAINS_MALICIOUS_COUNT_MEDIUM = 1
     DOMAINS_MALICIOUS_COUNT_HIGH = 5
-
-    # Click Fraud
-    CLICK_FRAUD_COUNT = 10
 
     # Domínios Asiáticos
     ASIAN_DOMAIN_COUNT = 5
@@ -125,9 +148,6 @@ class Config:
     SCORE_DOMAINS_MALICIOUS_MEDIUM = 8
     SCORE_DOMAINS_SUSPICIOUS = 5
 
-    SCORE_CLICK_FRAUD_HIGH = 5
-    SCORE_CLICK_FRAUD_LOW = 3
-
     SCORE_ASIAN_DOMAINS_HIGH = 5
     SCORE_ASIAN_DOMAINS_LOW = 2
 
@@ -158,21 +178,6 @@ GLOBAL_ASIAN_DOMAIN_KEYWORDS = [
     ".tw",
 ]
 
-GLOBAL_SUSPICIOUS_USER_AGENTS = [
-    "Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.1; Trident/4.0",  # Antigo/desatualizado
-    "Mozilla/5.0 (Windows NT 6.1)",  # Muito genérico
-]
-
-GLOBAL_CLICK_FRAUD_KEYWORDS = [
-    "/stat.htm",
-    "/ck.aspx",
-    "/sync_pos.htm",
-    "cnzz_core_c.php",
-    "repeatip=",
-    "showp=",
-    "rnd=",
-]
-
 GLOBAL_MALICIOUS_IPS = {
     "185.220.101.23": "Tor exit node",
     "60.221.254.19": "Known C2 server (from sample)",
@@ -200,73 +205,91 @@ GLOBAL_SUSPICIOUS_COUNTRIES = [
 ################################################################################
 
 
-def detectar_dominios_suspeitos(dados):
-    """Detecta domínios suspeitos, user-agents maliciosos e padrões de fraude"""
-    suspeitos = {
-        "dominios_suspeitos": [],
-        "user_agents_maliciosos": [],
-        "click_fraud_patterns": [],
-        "short_urls": [],
-        "asian_domains": [],
-    }
-
-    # Usar as listas globais centralizadas
+def analisar_iocs_e_dominios(dados):
+    """Analisa IOCs, domínios suspeitos e threat intelligence em uma única passagem
+    *** OTIMIZADO: Unifica detectar_dominios_suspeitos + verificar_threat_intelligence ***
+    """
+    # Usar listas de IOCs globais
     dominios_maliciosos = GLOBAL_MALICIOUS_DOMAINS
-    user_agents_suspeitos = GLOBAL_SUSPICIOUS_USER_AGENTS
-    click_fraud_keywords = GLOBAL_CLICK_FRAUD_KEYWORDS
     suspicious_tlds = GLOBAL_SUSPICIOUS_TLDS
     asian_keywords = GLOBAL_ASIAN_DOMAIN_KEYWORDS
+    malicious_ips = GLOBAL_MALICIOUS_IPS
+    suspicious_prefixes = GLOBAL_SUSPICIOUS_COUNTRY_PREFIXES
+    
+    resultado = {
+        # Domínios
+        "dominios_suspeitos": [],
+        "user_agents_maliciosos": [],
+        "short_urls": [],
+        "asian_domains": [],
+        # Threat Intelligence
+        "malicious_ips": [],
+        "malicious_domains": [],
+        "suspicious_countries": [],
+        "tor_nodes": [],
+        "confidence_scores": {},
+    }
 
     for pkt in dados:
+        src_ip = pkt.get("src_ip")
+        dst_ip = pkt.get("dst_ip")
+        dns_query = pkt.get("dns_query")
+        
         # Análise de DNS queries
-        if pkt.get("dns_query"):
-            query = pkt["dns_query"].lower()
+        if dns_query:
+            query = dns_query.lower()
 
             # Verificar domínios maliciosos conhecidos
             for dominio in dominios_maliciosos:
                 if dominio in query:
-                    suspeitos["dominios_suspeitos"].append(
-                        {
-                            "query": query,
-                            "src_ip": pkt["src_ip"],
-                            "tipo": "dominio_malicioso_conhecido",
-                        }
-                    )
+                    resultado["dominios_suspeitos"].append({
+                        "query": query,
+                        "src_ip": src_ip,
+                        "tipo": "dominio_malicioso_conhecido",
+                    })
+                    resultado["malicious_domains"].append({
+                        "domain": query,
+                        "src": src_ip,
+                        "categoria": "Malware/Click fraud",
+                        "confidence": 0.85,
+                    })
 
             # Detectar domínios com TLD suspeitos
             if any(tld in query for tld in suspicious_tlds):
-                suspeitos["dominios_suspeitos"].append(
-                    {"query": query, "src_ip": pkt["src_ip"], "tipo": "tld_suspeito"}
-                )
+                resultado["dominios_suspeitos"].append({
+                    "query": query,
+                    "src_ip": src_ip,
+                    "tipo": "tld_suspeito"
+                })
 
             # Detectar domínios asiáticos suspeitos
             if any(keyword in query for keyword in asian_keywords):
-                suspeitos["asian_domains"].append(query)
+                resultado["asian_domains"].append(query)
+        
+        # Análise de IPs maliciosos
+        if dst_ip and dst_ip in malicious_ips:
+            resultado["malicious_ips"].append({
+                "ip": dst_ip,
+                "src": src_ip,
+                "categoria": malicious_ips[dst_ip],
+                "confidence": 0.9,
+            })
+        
+        # Verificar ranges de IP suspeitos
+        if dst_ip and any(dst_ip.startswith(prefix) for prefix in suspicious_prefixes):
+            resultado["suspicious_countries"].append({
+                "ip": dst_ip,
+                "country": "Suspicious region",
+                "confidence": 0.6
+            })
 
-        # Análise de payload HTTP (simulado)
-        if (
-            pkt.get("entropy") and pkt["entropy"] < 4.0
-        ):  # Baixa entropia = texto legível
-            src_port = pkt.get("src_port", 0)
-            dst_port = pkt.get("dst_port", 0)
-
-            # Portas HTTP/HTTPS
-            if src_port in [80, 443, 8080] or dst_port in [80, 443, 8080]:
-                # Simulação baseada em padrões
-                suspeitos["click_fraud_patterns"].append(
-                    {
-                        "src_ip": pkt["src_ip"],
-                        "dst_ip": pkt["dst_ip"],
-                        "port": dst_port,
-                        "suspeita": "trafego_http_suspeito",
-                    }
-                )
-
-    return suspeitos
+    return resultado
 
 
-def calcular_score_malware(dados, padroes_suspeitos, dominios_suspeitos):
-    """Calcula score de probabilidade de malware (0-100) baseado em evidências e thresholds do Config"""
+def calcular_score_malware(dados, padroes_suspeitos, iocs_e_dominios):
+    """Calcula score de probabilidade de malware (0-100) baseado em evidências e thresholds do Config
+    *** ATUALIZADO: Usa iocs_e_dominios unificado ***
+    """
     score = 0
     evidencias = []
 
@@ -303,8 +326,8 @@ def calcular_score_malware(dados, padroes_suspeitos, dominios_suspeitos):
                     )
 
     # 1. Múltiplas conexões externas (Score Máximo: SCORE_BOTNET_CRITICAL)
-    if padroes_suspeitos["hosts_com_multiplas_conexoes"]:
-        for host, count in padroes_suspeitos["hosts_com_multiplas_conexoes"].items():
+    if padroes_suspeitos.get("hosts_com_multiplas_conexoes"):
+        for host, count in padroes_suspeitos.get("hosts_com_multiplas_conexoes", {}).items():
             if count > cfg.BOTNET_CONNECTIONS_CRITICAL:
                 score += cfg.SCORE_BOTNET_CRITICAL
                 evidencias.append(
@@ -323,8 +346,8 @@ def calcular_score_malware(dados, padroes_suspeitos, dominios_suspeitos):
                 evidencias.append(f"MÉDIO: {host} conectou a {count} destinos externos")
 
     # 2. Port scanning (Score Máximo: SCORE_PORTSCAN_CRITICAL)
-    if padroes_suspeitos["port_scanning"]:
-        for scan, ports in padroes_suspeitos["port_scanning"].items():
+    if padroes_suspeitos.get("port_scanning"):
+        for scan, ports in padroes_suspeitos.get("port_scanning", {}).items():
             if ports > cfg.PORT_SCAN_CRITICAL:
                 score += cfg.SCORE_PORTSCAN_CRITICAL
                 evidencias.append(f"CRÍTICO: Port scan massivo {scan} ({ports} portas)")
@@ -338,32 +361,16 @@ def calcular_score_malware(dados, padroes_suspeitos, dominios_suspeitos):
                 score += cfg.SCORE_PORTSCAN_LOW
                 evidencias.append(f"BAIXO: Port scan {scan} ({ports} portas)")
 
-    # 3. Flooding attacks (Score Máximo: SCORE_FLOOD_CRITICAL)
-    if padroes_suspeitos["flood_attacks"]:
-        max_flood = max(padroes_suspeitos["flood_attacks"].values())
-        if max_flood > cfg.FLOOD_CRITICAL:
-            score += cfg.SCORE_FLOOD_CRITICAL
-            evidencias.append(f"CRÍTICO: Flood DDoS massivo ({max_flood} pacotes)")
-        elif max_flood > cfg.FLOOD_HIGH:
-            score += cfg.SCORE_FLOOD_HIGH
-            evidencias.append(f"ALTO: Flood significativo ({max_flood} pacotes)")
-        elif max_flood > cfg.FLOOD_MEDIUM:
-            score += cfg.SCORE_FLOOD_MEDIUM
-            evidencias.append(f"MÉDIO: Flood moderado ({max_flood} pacotes)")
-        elif max_flood > cfg.FLOOD_LOW:
-            score += cfg.SCORE_FLOOD_LOW
-            evidencias.append(f"BAIXO: Flood detectado ({max_flood} pacotes)")
-
-    # 4. Comunicação C2 (Score Máximo: SCORE_C2_HIGH)
-    if padroes_suspeitos["comunicacao_c2"]:
+    # 3. Comunicação C2 (Score Máximo: SCORE_C2_HIGH)
+    if padroes_suspeitos.get("comunicacao_c2"):
         high_entropy_count = len(
             [
                 c
-                for c in padroes_suspeitos["comunicacao_c2"]
+                for c in padroes_suspeitos.get("comunicacao_c2", [])
                 if c["entropy"] > cfg.C2_MIN_ENTROPY
             ]
         )
-        total_c2 = len(padroes_suspeitos["comunicacao_c2"])
+        total_c2 = len(padroes_suspeitos.get("comunicacao_c2", []))
 
         if high_entropy_count > cfg.C2_COUNT_HIGH:
             score += cfg.SCORE_C2_HIGH
@@ -383,15 +390,15 @@ def calcular_score_malware(dados, padroes_suspeitos, dominios_suspeitos):
             evidencias.append(f"BAIXO: Comunicação criptografada detectada")
 
     # 5. Domínios maliciosos (Score Máximo: SCORE_DOMAINS_MALICIOUS_HIGH)
-    if dominios_suspeitos["dominios_suspeitos"]:
+    if iocs_e_dominios.get("dominios_suspeitos"):
         malicious_domains = len(
             [
                 d
-                for d in dominios_suspeitos["dominios_suspeitos"]
+                for d in iocs_e_dominios.get("dominios_suspeitos", [])
                 if d["tipo"] == "dominio_malicioso_conhecido"
             ]
         )
-        total_suspicious = len(dominios_suspeitos["dominios_suspeitos"])
+        total_suspicious = len(iocs_e_dominios.get("dominios_suspeitos", []))
 
         if malicious_domains > cfg.DOMAINS_MALICIOUS_COUNT_HIGH:
             score += cfg.SCORE_DOMAINS_MALICIOUS_HIGH
@@ -407,25 +414,49 @@ def calcular_score_malware(dados, padroes_suspeitos, dominios_suspeitos):
             score += cfg.SCORE_DOMAINS_SUSPICIOUS
             evidencias.append(f"MÉDIO: {total_suspicious} domínios suspeitos")
 
-    # 6. Click fraud (Score Máximo: SCORE_CLICK_FRAUD_HIGH)
-    if dominios_suspeitos["click_fraud_patterns"]:
-        fraud_count = len(dominios_suspeitos["click_fraud_patterns"])
-        if fraud_count > cfg.CLICK_FRAUD_COUNT:
-            score += cfg.SCORE_CLICK_FRAUD_HIGH
-            evidencias.append(f"MÉDIO: {fraud_count} padrões de fraude de cliques")
-        else:
-            score += cfg.SCORE_CLICK_FRAUD_LOW
-            evidencias.append("BAIXO: Padrões de fraude de cliques detectados")
-
-    # 7. Domínios asiáticos suspeitos (Score Máximo: SCORE_ASIAN_DOMAINS_HIGH)
-    if dominios_suspeitos["asian_domains"]:
-        asian_count = len(set(dominios_suspeitos["asian_domains"]))
+    # 6. Domínios asiáticos suspeitos (Score Máximo: SCORE_ASIAN_DOMAINS_HIGH)
+    if iocs_e_dominios.get("asian_domains"):
+        asian_count = len(set(iocs_e_dominios.get("asian_domains", [])))
         if asian_count > cfg.ASIAN_DOMAIN_COUNT:
             score += cfg.SCORE_ASIAN_DOMAINS_HIGH
             evidencias.append(f"MÉDIO: {asian_count} domínios asiáticos suspeitos")
         else:
             score += cfg.SCORE_ASIAN_DOMAINS_LOW
             evidencias.append(f"BAIXO: {asian_count} domínios asiáticos detectados")
+
+    # 8. Anomalias de tráfego (Score Máximo: 10)
+    if padroes_suspeitos.get("anomalias_trafego"):
+        anomaly_count = len(padroes_suspeitos["anomalias_trafego"])
+        if anomaly_count > 5:
+            score += 10
+            evidencias.append(f"MÉDIO: {anomaly_count} anomalias de tráfego detectadas")
+        else:
+            score += 5
+            evidencias.append(f"BAIXO: {anomaly_count} anomalias de tráfego")
+
+    # 9. Vazamento de dados (Score Máximo: 15)
+    if padroes_suspeitos.get("data_leakage"):
+        total_leaked = sum(leak["total_bytes"] for leak in padroes_suspeitos.get("data_leakage", []))
+        mb_leaked = total_leaked / (1024 * 1024)
+        if mb_leaked > 100:  # > 100 MB
+            score += 15
+            evidencias.append(f"CRÍTICO: {mb_leaked:.2f} MB enviados externamente")
+        elif mb_leaked > 50:
+            score += 10
+            evidencias.append(f"ALTO: {mb_leaked:.2f} MB enviados externamente")
+        else:
+            score += 5
+            evidencias.append(f"MÉDIO: {mb_leaked:.2f} MB enviados externamente")
+
+    # 10. Conexões suspeitas (Score Máximo: 8)
+    if padroes_suspeitos.get("conexoes_suspeitas"):
+        susp_conn_count = len(padroes_suspeitos.get("conexoes_suspeitas", []))
+        if susp_conn_count > 10:
+            score += 8
+            evidencias.append(f"MÉDIO: {susp_conn_count} conexões a portas não-padrão")
+        else:
+            score += 4
+            evidencias.append(f"BAIXO: {susp_conn_count} conexões suspeitas")
 
     # Limitar score máximo
     score = min(score, 100)
@@ -462,13 +493,17 @@ def analisar_comportamento_temporal(dados):
     # Agrupar por conexão (src_ip, dst_ip, dst_port)
     conexoes = defaultdict(list)
     for pkt in dados:
-        # Pkt deve ter timestamp salvo pelo processar_pcap
-        if pkt["src_ip"] and pkt["dst_ip"] and pkt.get("timestamp"):
+        # Validar timestamp > 0 para evitar falsos positivos com timestamps inválidos
+        timestamp = pkt.get("timestamp", 0)
+        if pkt["src_ip"] and pkt["dst_ip"] and timestamp > 0:
             key = (pkt["src_ip"], pkt["dst_ip"], pkt["dst_port"])
-            conexoes[key].append(pkt["timestamp"])  # <-- CORREÇÃO: Usar timestamp real
+            conexoes[key].append(timestamp)
 
     # Detectar beaconing (comunicação periódica característica de malware)
     for conexao, timestamps in conexoes.items():
+        # Validar e filtrar timestamps válidos
+        timestamps = [t for t in timestamps if isinstance(t, (int, float)) and t > 0]
+        
         if len(timestamps) >= 5:  # Pelo menos 5 comunicações
             # Ordenar timestamps para garantir
             timestamps.sort()
@@ -513,71 +548,15 @@ def analisar_comportamento_temporal(dados):
     return comportamentos
 
 
-def verificar_threat_intelligence(dados):
-    """Verifica IPs e domínios contra bases de threat intelligence (das constantes globais)"""
-    # Usar listas de IOCs globais
-    malicious_ips = GLOBAL_MALICIOUS_IPS
-    malicious_domains = {
-        domain: "Click fraud/Malware" for domain in GLOBAL_MALICIOUS_DOMAINS
-    }
-    suspicious_countries = (
-        GLOBAL_SUSPICIOUS_COUNTRIES  # Não usado ativamente aqui, mas disponível
-    )
-    suspicious_prefixes = GLOBAL_SUSPICIOUS_COUNTRY_PREFIXES
-
-    iocs_found = {
-        "malicious_ips": [],
-        "malicious_domains": [],
-        "suspicious_countries": [],
-        "tor_nodes": [],
-        "confidence_scores": {},
-    }
-
-    for pkt in dados:
-        src_ip = pkt.get("src_ip")
-        dst_ip = pkt.get("dst_ip")
-
-        if not src_ip or not dst_ip:
-            continue
-
-        # Verificar IPs maliciosos
-        if dst_ip in malicious_ips:
-            iocs_found["malicious_ips"].append(
-                {
-                    "ip": dst_ip,
-                    "src": src_ip,
-                    "categoria": malicious_ips[dst_ip],
-                    "confidence": 0.9,
-                }
-            )
-
-        # Verificar domínios DNS suspeitos
-        dns_query = pkt.get("dns_query")
-        if dns_query:
-            for domain, categoria in malicious_domains.items():
-                if domain in dns_query.lower():
-                    iocs_found["malicious_domains"].append(
-                        {
-                            "domain": dns_query,
-                            "src": src_ip,
-                            "categoria": categoria,
-                            "confidence": 0.85,
-                        }
-                    )
-
-        # Verificar ranges de IP suspeitos (simulado por prefixos)
-        if dst_ip:
-            if any(dst_ip.startswith(prefix) for prefix in suspicious_prefixes):
-                iocs_found["suspicious_countries"].append(
-                    {"ip": dst_ip, "country": "Suspicious region", "confidence": 0.6}
-                )
-
-    return iocs_found
 
 
 def calcular_entropia(data):
     """Calcula a entropia de dados binários"""
     if not data:
+        return 0.0
+    
+    data_len = len(data)
+    if data_len == 0:
         return 0.0
 
     ocorrencias = {}
@@ -585,7 +564,6 @@ def calcular_entropia(data):
         ocorrencias[byte] = ocorrencias.get(byte, 0) + 1
 
     entropia = 0
-    data_len = len(data)  # Cache do comprimento
     for count in ocorrencias.values():
         p_x = count / data_len
         entropia -= p_x * math.log2(p_x)
@@ -596,6 +574,150 @@ def calcular_entropia(data):
 ################################################################################
 # 3. PROCESSADOR DE PACOTES (PARSER)
 ################################################################################
+
+
+def processar_csv(arquivo_csv):
+    """
+    Processa arquivo CSV exportado de ferramentas de rede (Wireshark, tcpdump, etc)
+    Formatos suportados:
+    - Wireshark: Export Packet Dissections > As CSV
+    - Colunas mínimas: No., Time, Source, Destination, Protocol, Length, Info
+    - Colunas opcionais: Source Port, Destination Port, TCP Flags
+    
+    Retorna lista de dicts no mesmo formato de processar_pcap()
+    """
+    resumo = []
+    
+    try:
+        with open(arquivo_csv, 'r', encoding='utf-8', errors='ignore') as f:
+            # Detectar delimitador (vírgula, ponto-e-vírgula, tab)
+            sample = f.read(1024)
+            f.seek(0)
+            
+            delimiter = ','
+            if sample.count(';') > sample.count(','):
+                delimiter = ';'
+            elif sample.count('\t') > sample.count(','):
+                delimiter = '\t'
+            
+            reader = csv.DictReader(f, delimiter=delimiter)
+            
+            # Mapear nomes de colunas comuns (case-insensitive)
+            for row in reader:
+                # Normalizar keys para lowercase
+                row_lower = {k.lower().strip(): v for k, v in row.items()}
+                
+                # Extrair campos principais (tentar variações de nomes)
+                timestamp = 0.0
+                for time_key in ['time', 'timestamp', 'time_relative', 'frame.time_relative']:
+                    if time_key in row_lower and row_lower[time_key]:
+                        try:
+                            timestamp = float(row_lower[time_key])
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                
+                src_ip = None
+                for src_key in ['source', 'src', 'ip.src', 'source address']:
+                    if src_key in row_lower and row_lower[src_key]:
+                        src_ip = row_lower[src_key].strip()
+                        break
+                
+                dst_ip = None
+                for dst_key in ['destination', 'dst', 'ip.dst', 'destination address']:
+                    if dst_key in row_lower and row_lower[dst_key]:
+                        dst_ip = row_lower[dst_key].strip()
+                        break
+                
+                protocol = None
+                for proto_key in ['protocol', 'proto', '_ws.col.protocol']:
+                    if proto_key in row_lower and row_lower[proto_key]:
+                        protocol = row_lower[proto_key].strip().upper()
+                        break
+                
+                length = 0
+                for len_key in ['length', 'len', 'frame.len', 'packet length']:
+                    if len_key in row_lower and row_lower[len_key]:
+                        try:
+                            length = int(row_lower[len_key])
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                
+                # Portas (opcional)
+                src_port = None
+                for sport_key in ['source port', 'src port', 'tcp.srcport', 'udp.srcport']:
+                    if sport_key in row_lower and row_lower[sport_key]:
+                        try:
+                            src_port = int(row_lower[sport_key])
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                
+                dst_port = None
+                for dport_key in ['destination port', 'dst port', 'tcp.dstport', 'udp.dstport']:
+                    if dport_key in row_lower and row_lower[dport_key]:
+                        try:
+                            dst_port = int(row_lower[dport_key])
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                
+                # Info/DNS query
+                dns_query = None
+                info = row_lower.get('info', row_lower.get('_ws.col.info', ''))
+                if info and 'dns' in protocol.lower() if protocol else False:
+                    # Extrair query do campo Info
+                    if 'query' in info.lower():
+                        dns_query = info.strip()
+                
+                # TCP Flags (opcional)
+                tcp_flags = None
+                for flag_key in ['tcp flags', 'tcp.flags', 'flags']:
+                    if flag_key in row_lower and row_lower[flag_key]:
+                        tcp_flags = row_lower[flag_key].strip()
+                        break
+                
+                # Converter protocolo para número (aproximado)
+                proto_num = None
+                if protocol:
+                    proto_map = {
+                        'TCP': 6,
+                        'UDP': 17,
+                        'ICMP': 1,
+                        'ICMPv6': 58,
+                        'ARP': 'ARP',
+                        'DNS': 17,  # DNS usa UDP
+                        'HTTP': 6,  # HTTP usa TCP
+                        'HTTPS': 6,
+                        'TLS': 6,
+                        'SSL': 6,
+                    }
+                    proto_num = proto_map.get(protocol, protocol)
+                
+                # Criar registro no formato padrão
+                if src_ip and dst_ip:  # Mínimo necessário
+                    info_dict = {
+                        'timestamp': timestamp,
+                        'src_ip': src_ip,
+                        'dst_ip': dst_ip,
+                        'protocol': proto_num or 'Unknown',
+                        'ip_version': 4 if '.' in src_ip else (6 if ':' in src_ip else 'Unknown'),
+                        'length': length,
+                        'entropy': None,  # CSV não tem payload para calcular entropia
+                        'src_port': src_port,
+                        'dst_port': dst_port,
+                        'tcp_flags': tcp_flags,
+                        'dns_query': dns_query,
+                    }
+                    resumo.append(info_dict)
+        
+        logger.info(f"✅ CSV processado: {len(resumo)} registros válidos")
+        return resumo
+        
+    except Exception as e:
+        logger.error(f"Erro ao processar CSV: {e}")
+        raise Exception(f"Erro ao processar arquivo CSV: {str(e)}")
 
 
 def processar_pcap(arquivo_pcap):
@@ -610,7 +732,10 @@ def processar_pcap(arquivo_pcap):
 
         for pkt in pacotes:
             info = None
-            timestamp = float(pkt.time)  # <-- CORREÇÃO: Capturar o timestamp real
+            try:
+                timestamp = float(pkt.time) if hasattr(pkt, 'time') else 0.0
+            except (ValueError, TypeError, AttributeError):
+                timestamp = 0.0
 
             # Processar pacotes IP
             if IP in pkt:
@@ -668,46 +793,54 @@ def processar_pcap(arquivo_pcap):
                     if len(raw_data) >= 20:
                         version = (raw_data[0] >> 4) & 0xF
                         if version == 4:  # IPv4
-                            ip_pkt = IP(raw_data)
-                            info = {
-                                "timestamp": timestamp,  # <-- CORREÇÃO
-                                "src_ip": ip_pkt.src,
-                                "dst_ip": ip_pkt.dst,
-                                "protocol": ip_pkt.proto,
-                                "ip_version": 4,
-                                "length": len(pkt),
-                                "entropy": None,
-                                "src_port": None,
-                                "dst_port": None,
-                                "tcp_flags": None,
-                                "dns_query": None,
-                                "raw_interpreted": True,
-                            }
-                            if TCP in ip_pkt:
-                                info["tcp_flags"] = str(ip_pkt[TCP].flags)
-                                info["src_port"] = ip_pkt[TCP].sport
-                                info["dst_port"] = ip_pkt[TCP].dport
-                            elif UDP in ip_pkt:
-                                info["src_port"] = ip_pkt[UDP].sport
-                                info["dst_port"] = ip_pkt[UDP].dport
+                            try:
+                                ip_pkt = IP(raw_data)
+                                info = {
+                                    "timestamp": timestamp,
+                                    "src_ip": ip_pkt.src,
+                                    "dst_ip": ip_pkt.dst,
+                                    "protocol": ip_pkt.proto,
+                                    "ip_version": 4,
+                                    "length": len(pkt),
+                                    "entropy": None,
+                                    "src_port": None,
+                                    "dst_port": None,
+                                    "tcp_flags": None,
+                                    "dns_query": None,
+                                    "raw_interpreted": True,
+                                }
+                                if TCP in ip_pkt:
+                                    info["tcp_flags"] = str(ip_pkt[TCP].flags)
+                                    info["src_port"] = ip_pkt[TCP].sport
+                                    info["dst_port"] = ip_pkt[TCP].dport
+                                elif UDP in ip_pkt:
+                                    info["src_port"] = ip_pkt[UDP].sport
+                                    info["dst_port"] = ip_pkt[UDP].dport
+                            except Exception:
+                                logger.debug(f"Raw IPv4 inválido ou malformado")
+                                info = None
 
                         elif version == 6:  # IPv6
-                            ipv6_pkt = IPv6(raw_data)
-                            info = {
-                                "timestamp": timestamp,  # <-- CORREÇÃO
-                                "src_ip": ipv6_pkt.src,
-                                "dst_ip": ipv6_pkt.dst,
-                                "protocol": ipv6_pkt.nh,
-                                "ip_version": 6,
-                                "length": len(pkt),
-                                "entropy": None,
-                                "src_port": None,
-                                "dst_port": None,
-                                "tcp_flags": None,
-                                "dns_query": None,
-                                "raw_interpreted": True,
-                            }
-                except Exception as e_raw:  # <-- CORREÇÃO: Capturar exceção específica
+                            try:
+                                ipv6_pkt = IPv6(raw_data)
+                                info = {
+                                    "timestamp": timestamp,
+                                    "src_ip": ipv6_pkt.src,
+                                    "dst_ip": ipv6_pkt.dst,
+                                    "protocol": ipv6_pkt.nh,
+                                    "ip_version": 6,
+                                    "length": len(pkt),
+                                    "entropy": None,
+                                    "src_port": None,
+                                    "dst_port": None,
+                                    "tcp_flags": None,
+                                    "dns_query": None,
+                                    "raw_interpreted": True,
+                                }
+                            except Exception:
+                                logger.debug(f"Raw IPv6 inválido ou malformado")
+                                info = None
+                except (ValueError, IndexError, AttributeError, struct.error) as e_raw:
                     logger.debug(f"Falha ao interpretar Raw data: {e_raw}")
                     # Se falhar a interpretação, criar entrada genérica para dados Raw
                     raw_data = bytes(pkt[Raw].load)
@@ -745,7 +878,7 @@ def processar_pcap(arquivo_pcap):
                                     info["dns_query"] = pkt[DNS].qd.qname.decode(
                                         "utf-8"
                                     )
-                            except Exception:  # <-- CORREÇÃO: Captura mais restrita
+                            except (AttributeError, UnicodeDecodeError, IndexError):
                                 pass
 
                 # Calcular entropia do payload se ainda não foi calculada
@@ -785,88 +918,154 @@ def processar_pcap(arquivo_pcap):
 def analisar_padroes_botnet(dados, ips_origem, ips_destino):
     """
     Analisa padrões específicos de botnet e malware
-    *** CORRIGIDO: Usa thresholds da classe Config ***
+    *** OTIMIZADO: Loop único consolidado com validação consistente ***
     """
     padroes = {
-        "hosts_com_multiplas_conexoes": {},  # Host interno -> múltiplos destinos externos
-        "comunicacao_c2": [],  # Possível Command & Control
-        "beaconing": {},  # Comunicação periódica
-        "data_exfiltration": [],  # Transferências suspeitas
-        "port_scanning": {},  # Tentativas de port scan
-        "flood_attacks": {},  # Ataques de flood
-        "ddos_attacks": {},  # Ataques DDoS (SYN Flood, UDP Flood, etc)
-        "crypto_mining": [],  # Padrões de crypto mining
-        "click_fraud": [],  # Fraude de cliques
+        "hosts_com_multiplas_conexoes": {},
+        "comunicacao_c2": [],
+        "port_scanning": {},
+        "ddos_attacks": {},
+        "anomalias_trafego": [],
+        "conexoes_suspeitas": [],
+        "data_leakage": [],
     }
 
-    cfg = Config  # Atalho para a classe de configuração
+    cfg = Config
 
-    # Analisar hosts com múltiplas conexões externas (indicador de botnet)
+    # Inicializar detectores
     conexoes_por_host = defaultdict(set)
-    for pkt in dados:
-        src_ip = pkt["src_ip"]
-        dst_ip = pkt["dst_ip"]
-
-        if src_ip and dst_ip:
-            is_src_internal = (
-                src_ip.startswith("10.")
-                or src_ip.startswith("192.168.")
-                or src_ip.startswith("172.")
-            )
-            is_dst_external = not (
-                dst_ip.startswith("10.")
-                or dst_ip.startswith("192.168.")
-                or dst_ip.startswith("172.")
-            )
-
-            if is_src_internal and is_dst_external:
-                conexoes_por_host[src_ip].add(dst_ip)
-
-    for host, destinos in conexoes_por_host.items():
-        is_ddos_attacker = any(
-            attack_info.get("attacker") == host
-            for attack_info in padroes.get("ddos_attacks", {}).values()
-            if isinstance(attack_info, dict)
-        )
-
-        # Usar threshold do Config
-        if not is_ddos_attacker and len(destinos) > cfg.BOTNET_CONNECTIONS_LOW:
-            padroes["hosts_com_multiplas_conexoes"][host] = len(destinos)
-
-    # ======== DETECÇÃO DE DDoS (SYN Flood, UDP Flood, etc) ========
     ddos_detector = defaultdict(lambda: {"syn": 0, "ack": 0, "rst": 0, "total": 0})
     syn_sources = defaultdict(set)
+    udp_flood_detector = defaultdict(int)
+    udp_sources = defaultdict(set)
+    icmp_flood_detector = defaultdict(int)
+    ack_flood_detector = defaultdict(int)
+    http_connections = defaultdict(int)
+    arp_table = defaultdict(int)
+    dns_responses = defaultdict(lambda: {"count": 0, "total_size": 0})
+    fragmented_packets = defaultdict(int)
+    port_scan_detector = defaultdict(set)
+    portas_suspeitas = defaultdict(int)
+    uploads = defaultdict(int)
+    traffic_by_hour = defaultdict(int)
+    protocol_count = defaultdict(int)
+    tiny_packets = 0
+    jumbo_packets = 0
+    high_entropy_packets = []
+    
+    portas_conhecidas = {20, 21, 22, 23, 25, 53, 80, 110, 143, 443, 465, 587, 993, 995, 3306, 3389, 5432, 8080, 8443}
 
+    # ======== LOOP ÚNICO CONSOLIDADO ========
     for pkt in dados:
-        src_ip = pkt["src_ip"]
-        dst_ip = pkt["dst_ip"]
-        dst_port = pkt["dst_port"]
+        src_ip = pkt.get("src_ip")
+        dst_ip = pkt.get("dst_ip")
+        src_port = pkt.get("src_port")
+        dst_port = pkt.get("dst_port")
+        protocol = pkt.get("protocol")
         tcp_flags = pkt.get("tcp_flags")
+        length = pkt.get("length", 0)
+        entropy = pkt.get("entropy")
+        timestamp = pkt.get("timestamp", 0)
+        ip_version = pkt.get("ip_version")
 
-        if src_ip and dst_ip and dst_port and tcp_flags:
+        # Validação de IP consistente
+        ip_valid = src_ip and dst_ip and src_ip not in ["Raw Data", "Unknown"] and dst_ip not in ["Raw Data", "Unknown"]
+        
+        # 1. Hosts com múltiplas conexões (apenas IPs válidos)
+        if ip_valid:
+            is_src_internal = src_ip.startswith(("10.", "192.168.", "172."))
+            is_dst_external = not dst_ip.startswith(("10.", "192.168.", "172."))
+            
+            if is_src_internal and is_dst_external:
+                conexoes_por_host[src_ip].add(dst_ip)
+                uploads[src_ip] += length  # 2. Data leakage tracking
+        
+        # 3. DDoS SYN Flood detection
+        if ip_valid and dst_port and tcp_flags:
             key = (src_ip, dst_ip, dst_port)
             ddos_detector[key]["total"] += 1
-
-            if "S" in tcp_flags and "A" not in tcp_flags:  # SYN sem ACK
+            
+            if "S" in tcp_flags and "A" not in tcp_flags:
                 ddos_detector[key]["syn"] += 1
                 syn_sources[dst_ip].add(src_ip)
             elif "A" in tcp_flags:
                 ddos_detector[key]["ack"] += 1
             elif "R" in tcp_flags:
                 ddos_detector[key]["rst"] += 1
-
-    # Analisar padrões de DDoS SYN Flood
+            
+            # 4. ACK Flood detection
+            if "A" in tcp_flags and "S" not in tcp_flags and "F" not in tcp_flags:
+                ack_flood_detector[key] += 1
+            
+            # 5. Slowloris detection
+            if dst_port in [80, 443, 8080] and "S" in tcp_flags:
+                http_connections[(src_ip, dst_ip)] += 1
+        
+        # 6. UDP Flood detection
+        if ip_valid and dst_port and protocol == 17:
+            key = (src_ip, dst_ip, dst_port)
+            udp_flood_detector[key] += 1
+            udp_sources[dst_ip].add(src_ip)
+        
+        # 7. ICMP Flood detection
+        if ip_valid and protocol == 1:
+            icmp_flood_detector[(src_ip, dst_ip)] += 1
+        
+        # 8. ARP Spoofing
+        if ip_version == "ARP" and src_ip:
+            arp_table[src_ip] += 1
+        
+        # 9. DNS Amplification
+        if src_port == 53 and length > cfg.DNS_AMPLIFICATION_MIN_SIZE and src_ip:
+            dns_responses[src_ip]["count"] += 1
+            dns_responses[src_ip]["total_size"] += length
+        
+        # 10. Fragmentação IP
+        if ip_valid and length < cfg.FRAGMENT_ATTACK_SMALL_PKT_SIZE:
+            fragmented_packets[src_ip] += 1
+        
+        # 11. Port scanning (incluindo portas >1024 comuns)
+        if ip_valid and dst_port:
+            # Detectar scan em portas relevantes (não apenas <1024)
+            if dst_port not in portas_conhecidas and dst_port < 49152:
+                port_scan_detector[(src_ip, dst_ip)].add(dst_port)
+                # 12. Conexões suspeitas
+                portas_suspeitas[f"{src_ip} → {dst_ip}:{dst_port}"] += 1
+        
+        # 13. Alta entropia (C2)
+        if ip_valid and entropy and entropy > cfg.C2_MIN_ENTROPY:
+            high_entropy_packets.append(pkt)
+        
+        # 14. Tráfego por hora
+        if timestamp > 0:
+            from datetime import datetime
+            try:
+                hour = datetime.fromtimestamp(timestamp).hour
+                traffic_by_hour[hour] += 1
+            except (ValueError, OSError):
+                pass
+        
+        # 15. Protocolos incomuns
+        if protocol not in [1, 6, 17]:
+            protocol_count[protocol] += 1
+        
+        # 16. Tamanhos anômalos
+        if length < cfg.PACKET_SIZE_ANOMALY_MIN:
+            tiny_packets += 1
+        elif length > cfg.PACKET_SIZE_ANOMALY_MAX:
+            jumbo_packets += 1
+    
+    # ======== PROCESSAMENTO PÓS-LOOP ========
+    
+    # Processar DDoS SYN Flood
     for (src, dst, port), flags in ddos_detector.items():
         syn_count = flags["syn"]
         ack_count = flags["ack"]
         total = flags["total"]
-
-        # PADRÃO 1: SYN Flood clássico (muitos SYN, poucos ACK)
-        if (
-            syn_count > 100 and (ack_count / max(syn_count, 1)) < 0.1
-        ):  # Threshold específico
+        
+        if syn_count > cfg.SYN_FLOOD_MIN_PACKETS and (ack_count / max(syn_count, 1)) < cfg.SYN_FLOOD_ACK_RATIO:
             num_sources = len(syn_sources.get(dst, set()))
-            if num_sources > 10:
+            if num_sources > cfg.DDOS_DISTRIBUTED_SOURCES:
                 padroes["ddos_attacks"][f"SYN_FLOOD_DISTRIBUTED: {dst}:{port}"] = {
                     "type": "SYN Flood Distribuído",
                     "target": dst,
@@ -883,40 +1082,20 @@ def analisar_padroes_botnet(dados, ips_origem, ips_destino):
                     "port": port,
                     "syn_packets": syn_count,
                     "ack_packets": ack_count,
+                    "num_attackers": 1,
                     "severity": "ALTO",
                 }
-
-        # PADRÃO 2: Flooding geral (muito tráfego unidirecional)
-        elif total > 1000 and ack_count < (total * 0.3):
-            padroes["ddos_attacks"][f"FLOOD: {src} → {dst}:{port}"] = {
-                "type": "Flood Attack",
-                "attacker": src,
-                "target": dst,
-                "port": port,
-                "total_packets": total,
-                "severity": "MÉDIO",
-            }
-
-    # ======== DETECÇÃO DE UDP FLOOD ========
-    udp_flood_detector = defaultdict(int)
-    udp_sources = defaultdict(set)
-
-    for pkt in dados:
-        protocol = pkt.get("protocol")
-        if (
-            pkt["src_ip"] and pkt["dst_ip"] and pkt["dst_port"] and protocol == 17
-        ):  # UDP
-            key = (pkt["src_ip"], pkt["dst_ip"], pkt["dst_port"])
-            udp_flood_detector[key] += 1
-            udp_sources[pkt["dst_ip"]].add(pkt["src_ip"])
-
-    # Analisar padrões de UDP Flood
+    
+    # Processar UDP Flood
     for (src, dst, port), count in udp_flood_detector.items():
-        if port != 53 and count > 500:  # Threshold específico
+        threshold = cfg.UDP_FLOOD_DNS_THRESHOLD if port == 53 else cfg.UDP_FLOOD_THRESHOLD
+        if count > threshold:
             num_sources = len(udp_sources.get(dst, set()))
-            if num_sources > 10:
+            attack_type = "DNS Amplification/Flood" if port == 53 else "UDP Flood"
+            
+            if num_sources > cfg.DDOS_DISTRIBUTED_SOURCES:
                 padroes["ddos_attacks"][f"UDP_FLOOD_DISTRIBUTED: {dst}:{port}"] = {
-                    "type": "UDP Flood Distribuído",
+                    "type": f"{attack_type} Distribuído",
                     "target": dst,
                     "port": port,
                     "udp_packets": count,
@@ -925,70 +1104,178 @@ def analisar_padroes_botnet(dados, ips_origem, ips_destino):
                 }
             else:
                 padroes["ddos_attacks"][f"UDP_FLOOD: {src} → {dst}:{port}"] = {
-                    "type": "UDP Flood",
+                    "type": attack_type,
                     "attacker": src,
                     "target": dst,
                     "port": port,
                     "udp_packets": count,
+                    "num_attackers": 1,
                     "severity": "ALTO",
                 }
-
-    # ... (O restante das detecções de DDoS (ICMP, ACK, Frag, Slowloris, ARP, DNS) continua aqui) ...
-    # ... (Omitido por brevidade, mas deve ser refatorado da mesma forma com Config) ...
-
-    # Detectar flooding (genérico)
-    flood_contador = defaultdict(int)
-    for pkt in dados:
-        key = (pkt["src_ip"], pkt["dst_ip"], pkt["dst_port"])
-        if key[0] and key[1]:
-            flood_contador[key] += 1
-
-    for (src, dst, port), count in flood_contador.items():
-        # Usar thresholds do Config
-        if count > cfg.FLOOD_LOW:
-            # Lógica mais simples, refinar se necessário (ex: DNS vs HTTP)
-            if (port != 53 and count > cfg.FLOOD_MEDIUM) or (
-                port == 53 and count > cfg.FLOOD_HIGH
-            ):
-                padroes["flood_attacks"][f"{src} → {dst}:{port}"] = count
-
-    # Detectar port scanning (mesmo IP tentando múltiplas portas)
-    port_scan_detector = defaultdict(set)
-    for pkt in dados:
-        if pkt["src_ip"] and pkt["dst_ip"] and pkt["dst_port"]:
-            if (
-                pkt["dst_port"] > 1024
-                or pkt["dst_port"] == 53
-                or pkt.get("src_port") == 53
-            ):
-                continue  # Ignorar portas efêmeras e DNS
-            key = (pkt["src_ip"], pkt["dst_ip"])
-            port_scan_detector[key].add(pkt["dst_port"])
-
+    
+    # Processar ICMP Flood
+    for (src, dst), count in icmp_flood_detector.items():
+        if count > cfg.ICMP_FLOOD_LOW:
+            severity = "ALTO" if count > cfg.ICMP_FLOOD_HIGH else "MÉDIO"
+            padroes["ddos_attacks"][f"ICMP_FLOOD: {src} → {dst}"] = {
+                "type": "ICMP Flood (Ping Flood)",
+                "attacker": src,
+                "target": dst,
+                "icmp_packets": count,
+                "num_attackers": 1,
+                "severity": severity,
+            }
+    
+    # Processar ACK Flood
+    for (src, dst, port), count in ack_flood_detector.items():
+        if count > cfg.ACK_FLOOD_THRESHOLD:
+            padroes["ddos_attacks"][f"ACK_FLOOD: {src} → {dst}:{port}"] = {
+                "type": "ACK Flood",
+                "attacker": src,
+                "target": dst,
+                "port": port,
+                "ack_packets": count,
+                "num_attackers": 1,
+                "severity": "ALTO",
+            }
+    
+    # Processar Slowloris
+    for (src, dst), count in http_connections.items():
+        if count > cfg.HTTP_SLOWLORIS_CONNECTIONS:
+            padroes["ddos_attacks"][f"SLOWLORIS: {src} → {dst}"] = {
+                "type": "Slowloris (HTTP Slow)",
+                "attacker": src,
+                "target": dst,
+                "http_connections": count,
+                "num_attackers": 1,
+                "severity": "ALTO",
+            }
+    
+    # Processar ARP Spoofing
+    for src_ip, count in arp_table.items():
+        if count > cfg.ARP_SPOOFING_THRESHOLD:
+            padroes["ddos_attacks"][f"ARP_SPOOFING: {src_ip}"] = {
+                "type": "ARP Spoofing",
+                "attacker": src_ip,
+                "arp_packets": count,
+                "num_attackers": 1,
+                "severity": "ALTO",
+            }
+    
+    # Processar DNS Amplification
+    for src_ip, stats in dns_responses.items():
+        if stats["count"] > cfg.DNS_AMPLIFICATION_MIN_COUNT and stats["total_size"] > cfg.DNS_AMPLIFICATION_MIN_BYTES:
+            padroes["ddos_attacks"][f"DNS_AMPLIFICATION: {src_ip}"] = {
+                "type": "DNS Amplification",
+                "amplifier": src_ip,
+                "large_responses": stats["count"],
+                "total_bytes": stats["total_size"],
+                "num_attackers": 1,
+                "severity": "CRÍTICO",
+            }
+    
+    # Processar Fragmentação IP
+    for src_ip, count in fragmented_packets.items():
+        if count > cfg.FRAGMENT_ATTACK_THRESHOLD:
+            padroes["ddos_attacks"][f"FRAGMENTATION_ATTACK: {src_ip}"] = {
+                "type": "Ataque de Fragmentação IP",
+                "attacker": src_ip,
+                "small_packets": count,
+                "num_attackers": 1,
+                "severity": "MÉDIO",
+            }
+    
+    # Processar Port Scanning
     for (src, dst), ports in port_scan_detector.items():
-        # Usar threshold do Config
         if len(ports) > cfg.PORT_SCAN_LOW:
             padroes["port_scanning"][f"{src} → {dst}"] = len(ports)
-
-    # Detectar alta entropia (possível comunicação C2 criptografada)
-    for pkt in dados:
-        if (
-            pkt["entropy"] and pkt["entropy"] > cfg.C2_MIN_ENTROPY
-        ):  # Usar threshold do Config
-            padroes["comunicacao_c2"].append(
-                {
-                    "src": pkt["src_ip"],
-                    "dst": pkt["dst_ip"],
-                    "port": pkt["dst_port"],
-                    "entropy": pkt["entropy"],
-                }
-            )
+    
+    # Processar hosts com múltiplas conexões (excluir atacantes DDoS)
+    ddos_ips = set()
+    for attack_info in padroes["ddos_attacks"].values():
+        if isinstance(attack_info, dict):
+            if attack_info.get("attacker"):
+                ddos_ips.add(attack_info["attacker"])
+            if attack_info.get("target"):
+                ddos_ips.add(attack_info["target"])
+    
+    for host, destinos in conexoes_por_host.items():
+        if host not in ddos_ips and len(destinos) > cfg.BOTNET_CONNECTIONS_LOW:
+            padroes["hosts_com_multiplas_conexoes"][host] = len(destinos)
+    
+    # Processar alta entropia (C2) - excluir IPs DDoS
+    for pkt in high_entropy_packets:
+        src_ip = pkt["src_ip"]
+        dst_ip = pkt["dst_ip"]
+        if src_ip not in ddos_ips and dst_ip not in ddos_ips:
+            padroes["comunicacao_c2"].append({
+                "src": src_ip,
+                "dst": dst_ip,
+                "port": pkt["dst_port"],
+                "entropy": pkt["entropy"],
+            })
+    
+    # Processar conexões suspeitas
+    for conexao, count in portas_suspeitas.items():
+        if count > 50:
+            padroes["conexoes_suspeitas"].append({
+                "conexao": conexao,
+                "count": count,
+                "tipo": "porta_nao_padrao_alta_frequencia"
+            })
+    
+    # Processar data leakage
+    for src_ip, total_bytes in uploads.items():
+        if total_bytes > 10 * 1024 * 1024:
+            padroes["data_leakage"].append({
+                "src_ip": src_ip,
+                "total_bytes": total_bytes,
+                "tipo": "upload_massivo_externo"
+            })
+    
+    # Processar tráfego por hora
+    if traffic_by_hour:
+        avg_traffic = sum(traffic_by_hour.values()) / max(len(traffic_by_hour), 1)
+        for hour, count in traffic_by_hour.items():
+            if count > avg_traffic * cfg.SPIKE_MULTIPLIER and hour in range(0, 6):
+                padroes["anomalias_trafego"].append({
+                    "hora": hour,
+                    "pacotes": count,
+                    "media": int(avg_traffic),
+                    "tipo": "spike_horario_incomum"
+                })
+    
+    # Processar protocolos incomuns
+    for protocol, count in protocol_count.items():
+        if count > 100:
+            padroes["anomalias_trafego"].append({
+                "protocolo": protocol,
+                "pacotes": count,
+                "tipo": "protocolo_incomum"
+            })
+    
+    # Processar tamanhos anômalos
+    if tiny_packets > 1000:
+        padroes["anomalias_trafego"].append({
+            "tipo": "pacotes_muito_pequenos",
+            "count": tiny_packets,
+            "tamanho": f"< {cfg.PACKET_SIZE_ANOMALY_MIN} bytes"
+        })
+    
+    if jumbo_packets > 100:
+        padroes["anomalias_trafego"].append({
+            "tipo": "pacotes_jumbo",
+            "count": jumbo_packets,
+            "tamanho": f"> {cfg.PACKET_SIZE_ANOMALY_MAX} bytes"
+        })
 
     return padroes
 
 
-def formatar_dados_para_analise(dados):
-    """Formata dados dos pacotes para análise pelo LLM"""
+def formatar_dados_para_analise(dados, padroes_suspeitos, iocs_e_dominios):
+    """Formata dados dos pacotes para análise pelo LLM
+    *** OTIMIZADO: Recebe padrões já calculados para evitar dupla execução ***
+    """
     total_pacotes = len(dados)
     ips_origem = set(pkt["src_ip"] for pkt in dados if pkt["src_ip"])
     ips_destino = set(pkt["dst_ip"] for pkt in dados if pkt["dst_ip"])
@@ -1011,9 +1298,6 @@ def formatar_dados_para_analise(dados):
             pkt["entropy"] and pkt["entropy"] > 6.0
         ):  # Manter 6.0 para logging, 7.5 para scoring
             entropias_altas.append(pkt)
-
-    padroes_suspeitos = analisar_padroes_botnet(dados, ips_origem, ips_destino)
-    dominios_suspeitos = detectar_dominios_suspeitos(dados)
 
     resumo = f"""
 RESUMO DA ANÁLISE DE REDE:
@@ -1057,25 +1341,41 @@ PROTOCOLOS DETECTADOS:
                 if attack_info.get("num_attackers"):
                     resumo += f"  L Fontes: {attack_info['num_attackers']} IPs\n"
 
-    if padroes_suspeitos["hosts_com_multiplas_conexoes"]:
+    if padroes_suspeitos.get("hosts_com_multiplas_conexoes"):
         resumo += "\n⚠️ HOSTS COM MÚLTIPLAS CONEXÕES EXTERNAS (Possível Botnet):\n"
-        for host, count in padroes_suspeitos["hosts_com_multiplas_conexoes"].items():
+        for host, count in padroes_suspeitos.get("hosts_com_multiplas_conexoes", {}).items():
             resumo += f"- {host} conectou-se a {count} destinos externos diferentes\n"
 
-    if padroes_suspeitos["port_scanning"]:
+    if padroes_suspeitos.get("port_scanning"):
         resumo += "\n🔍 PORT SCANNING DETECTADO:\n"
-        for scan, ports in padroes_suspeitos["port_scanning"].items():
+        for scan, ports in padroes_suspeitos.get("port_scanning", {}).items():
             resumo += f"- {scan} testou {ports} portas diferentes\n"
 
-    if padroes_suspeitos["comunicacao_c2"]:
+    if padroes_suspeitos.get("comunicacao_c2"):
         resumo += "\n📡 POSSÍVEL COMUNICAÇÃO C&C (Alta Entropia):\n"
-        for c2 in padroes_suspeitos["comunicacao_c2"][:5]:
+        for c2 in padroes_suspeitos.get("comunicacao_c2", [])[:5]:
             resumo += f"- {c2['src']} → {c2['dst']}:{c2['port']} (entropia: {c2['entropy']:.2f})\n"
 
-    if dominios_suspeitos["dominios_suspeitos"]:
+    if iocs_e_dominios.get("dominios_suspeitos"):
         resumo += "\n🌐 DOMÍNIOS SUSPEITOS DETECTADOS:\n"
-        for dom in dominios_suspeitos["dominios_suspeitos"][:5]:
+        for dom in iocs_e_dominios.get("dominios_suspeitos", [])[:5]:
             resumo += f"- {dom['query']} (de {dom['src_ip']}) - {dom['tipo']}\n"
+
+    if padroes_suspeitos.get("anomalias_trafego"):
+        resumo += "\n⚠️ ANOMALIAS DE TRÁFEGO:\n"
+        for anomalia in padroes_suspeitos.get("anomalias_trafego", [])[:5]:
+            resumo += f"- {anomalia.get('tipo', 'anomalia')}: {anomalia}\n"
+
+    if padroes_suspeitos.get("conexoes_suspeitas"):
+        resumo += "\n🔌 CONEXÕES SUSPEITAS:\n"
+        for conexao in padroes_suspeitos.get("conexoes_suspeitas", [])[:5]:
+            resumo += f"- {conexao['conexao']}: {conexao['count']} pacotes (porta não-padrão)\n"
+
+    if padroes_suspeitos.get("data_leakage"):
+        resumo += "\n📤 POSSÍVEL VAZAMENTO DE DADOS:\n"
+        for leak in padroes_suspeitos.get("data_leakage", [])[:5]:
+            mb = leak['total_bytes'] / (1024 * 1024)
+            resumo += f"- {leak['src_ip']}: {mb:.2f} MB enviados externamente\n"
 
     return resumo
 
@@ -1093,16 +1393,33 @@ def get_port_service(porta):
         68: "DHCP",
         80: "HTTP",
         110: "POP3",
+        135: "RPC",
+        137: "NetBIOS",
+        138: "NetBIOS",
+        139: "NetBIOS",
         143: "IMAP",
+        161: "SNMP",
+        162: "SNMP-Trap",
+        389: "LDAP",
         443: "HTTPS",
+        445: "SMB",
+        465: "SMTPS",
+        514: "Syslog",
+        587: "SMTP-MSA",
+        636: "LDAPS",
         993: "IMAPS",
         995: "POP3S",
         1433: "SQL Server",
+        1521: "Oracle DB",
+        3306: "MySQL",
         3389: "RDP",
         5432: "PostgreSQL",
-        3306: "MySQL",
+        5900: "VNC",
+        6379: "Redis",
         8080: "HTTP-Alt",
         8443: "HTTPS-Alt",
+        9200: "Elasticsearch",
+        27017: "MongoDB",
     }
     return servicos.get(porta, "Desconhecido")
 
@@ -1118,56 +1435,111 @@ def analisar_com_llm_hibrido(
     """Análise híbrida: LLM para comportamento + YARA como evidência complementar"""
 
     prompt = f"""
-Você é um especialista em segurança cibernética e análise forense de tráfego de rede especializado em detecção de malware, botnets e ataques APT.
+Você é um especialista em análise forense de tráfego de rede e detecção de ameaças cibernéticas.
 
-IMPORTANTE: Seja CAUTELOSO e evite falsos positivos. Tráfego normal de servidor pode incluir:
-- Múltiplas conexões legítimas (servidores web, DNS, email)
-- HTTPS legítimo tem alta entropia (isso é NORMAL)
-- Servidores podem acessar muitos IPs externos (CDNs, APIs, serviços cloud)
+**IMPORTANTE**: As detecções heurísticas são EVIDÊNCIAS, não vereditos finais. 
+Interprete o CONTEXTO completo antes de classificar:
+- DDoS entre IPs internos (192.168.x.x) pode ser diagnóstico legítimo
+- YARA detectando "Nmap" + port scan = ferramenta de segurança, não ataque
+- Alta entropia em HTTPS/TLS = NORMAL (criptografia legítima)
+- Correlacione YARA + Tráfego + Origem/Destino para evitar falsos positivos
 
-DADOS DE TRÁFEGO PARA ANÁLISE:
+DADOS DE TRÁFEGO:
 {dados_formatados}
 
-=== RELATÓRIO YARA (EVIDÊNCIAS DE MALWARE) ===
+RELATÓRIO YARA:
 {relatorio_yara}
 
-EXECUTE UMA ANÁLISE FORENSE EQUILIBRADA:
+INSTRUÇÕES DE ANÁLISE:
 
-🔍 CORRELAÇÃO YARA + TRÁFEGO:
-- Se há detecções YARA, correlacione com o tráfego de rede observado
-- Identifique quais conexões de rede podem estar relacionadas ao malware detectado
-- SOMENTE se houver CORRELAÇÃO clara entre YARA e tráfego, considere malware
+1. INTERPRETAÇÃO DE DETECÇÕES:
+   - DDoS Externo (Internet → Rede) = Ataque confirmado
+   - DDoS Interno (LAN → LAN) = Possível diagnóstico/teste
+   - Port Scanning + YARA (Nmap/Masscan) = Ferramenta de segurança
+   - Port Scanning sem YARA = Reconhecimento suspeito
 
-🚨 DETECÇÃO DE MALWARE E BOTNETS (EVITE FALSOS POSITIVOS):
-- Identifique padrões ANÔMALOS de comunicação C&C (não tráfego HTTPS normal)
-- Tráfego criptografado (alta entropia) em portas não-padrão (não em 443/HTTPS)
-- Beaconing: comunicação PERIÓDICA e REGULAR (não ocasional)
-- Múltiplas conexões EXCESSIVAS e INCOMUNS (>50 destinos externos é suspeito)
+2. CORRELAÇÃO YARA + TRÁFEGO:
+   - YARA (malware) + tráfego suspeito = Compromisso CONFIRMADO
+   - YARA (ferramenta) + atividade = Uso legítimo de ferramentas
+   - Sem YARA + DDoS = Ataque de rede (não malware)
 
-🔍 INDICADORES DE COMPROMISSO (THRESHOLDS REALISTAS):
-- Hosts com >100 conexões externas simultâneas diferentes
-- Port scanning: >50 portas testadas em curto período
-- Flooding: >1000 pacotes para mesmo destino
-- DNS suspeitos: DGA com padrões aleatórios claros
+3. DIFERENCIAÇÃO CRÍTICA (EVITAR CONTRADIÇÕES):
+   - DDoS: Identifique ATACANTE(S) e VÍTIMA separadamente
+     * ATACANTE = IP(s) enviando flood (SYN/UDP/ICMP)
+     * VÍTIMA = IP recebendo flood excessivo
+     * Um host NÃO pode ser atacante E vítima simultaneamente no mesmo ataque
+   - Botnet: Host → MUITOS destinos externos (>100 IPs distintos)
+   - Normal: HTTPS/DNS legítimo em portas padrão
+   - Tráfego para IPs Google (142.250.x.x, 172.217.x.x) = Geralmente LEGÍTIMO
 
-📊 ANÁLISE COMPORTAMENTAL:
-- Compare volumes: outliers EXTREMOS (não apenas acima da média)
-- Protocolos REALMENTE incomuns (não apenas HTTP/HTTPS/DNS comum)
-- Anomalias SIGNIFICATIVAS (não pequenas variações)
+4. ANÁLISE DE PORTAS:
+   - Portas de Serviço (0-1023): SSH(22), DNS(53), HTTP(80), HTTPS(443)
+   - Portas Registradas (1024-49151): Aplicações específicas
+   - Portas Efêmeras (49152-65535): NORMAIS em conexões TCP/UDP cliente
+   - SUSPEITO: Servidores escutando em portas efêmeras ou portas incomuns
+   - NORMAL: Cliente usando portas efêmeras (ex: 192.168.x.x:51234 → google.com:443)
 
-FORNEÇA UMA RESPOSTA ESTRUTURADA COM:
+5. ANOMALIAS A CONSIDERAR:
+   - Vazamento de dados: Uploads >10MB para IPs externos (excluindo Google/CDNs)
+   - Portas suspeitas: Servidor em porta efêmera OU porta incomum (<1024 não-padrão)
+   - Tráfego em horários incomuns (0h-6h) em redes corporativas
+   - Protocolos raros: Não TCP/UDP/ICMP/DNS/ARP
 
-1. **CLASSIFICAÇÃO DE RISCO** (Crítico/Alto/Médio/Baixo/Limpo)
-2. **CORRELAÇÃO YARA-TRÁFEGO** (como as detecções se relacionam com o tráfego)
-3. **AMEAÇAS IDENTIFICADAS** (seja específico sobre o tipo de malware/botnet - ou "Nenhuma" se limpo)
-4. **HOSTS COMPROMETIDOS** (liste IPs suspeitos com EVIDÊNCIAS FORTES - ou "Nenhum" se limpo)
-5. **PADRÕES DE ATAQUE** (descreva a campanha maliciosa - ou "Tráfego normal" se limpo)
-6. **AÇÕES IMEDIATAS** (contenção e isolamento - ou "Nenhuma ação necessária" se limpo)
-7. **INVESTIGAÇÃO FORENSE** (próximos passos - ou "Não necessário" se limpo)
-8. **REMEDIAÇÃO** (limpeza e fortalecimento - ou "Sistema aparenta estar limpo" se limpo)
+6. ANÁLISE DE ENTROPIA:
+   - Entropia >7.5 em HTTPS/TLS (porta 443) = **NORMAL** (SSL/TLS legítimo)
+   - Entropia >7.5 em DNS/HTTP (portas 53/80) = **SUSPEITO** (malware/tunelamento)
+   - Entropia >7.5 para Google/Cloudflare/AWS = Tráfego web normal
+   - Contexto: Sempre mencione o protocolo e porta ao analisar entropia
 
-Se NÃO houver evidências CLARAS de malware/ataque, classifique como BAIXO ou LIMPO.
-Seja detalhado mas REALISTA. Evite alarmes falsos.
+RESPOSTA ESTRUTURADA (8 SEÇÕES):
+
+1. **CLASSIFICAÇÃO DE RISCO** (Crítico/Alto/Médio/Baixo/Normal)
+   - Justifique baseado em evidências concretas
+
+2. **CORRELAÇÃO YARA-TRÁFEGO**
+   - Se YARA não detectou nada, mencione explicitamente
+
+3. **AMEAÇAS IDENTIFICADAS** (tipo específico: "SYN Flood DDoS", "Botnet Emotet", etc)
+   - Liste apenas ameaças confirmadas ou altamente prováveis
+
+4. **HOSTS COMPROMETIDOS**
+   - VÍTIMAS: IPs que RECEBEM ataque (flooding, port scan)
+   - ATACANTES: IPs que ENVIAM ataque
+   - COMPROMETIDOS: IPs com comportamento de botnet/malware
+   - SEJA CONSISTENTE - não liste o mesmo IP em categorias contraditórias
+
+5. **PADRÕES DE ATAQUE**
+   - **OBRIGATÓRIO**: Inclua números específicos dos dados fornecidos
+   - Formato: "Técnica: [números concretos]"
+   - Exemplos:
+     * "SYN Flood: 15.234 pacotes SYN enviados em 30 segundos"
+     * "DNS Amplification: 50 queries gerando 2.5MB de resposta"
+     * "Port Scan: 500 portas distintas escaneadas em 10 segundos"
+     * "Exfiltração: 50MB enviados para IP externo em conexão única"
+   - NÃO use descrições genéricas - SEMPRE cite os números do relatório
+
+6. **AÇÕES IMEDIATAS** (bloquear atacante, isolar vítima, etc)
+   - Priorize ações baseadas na severidade
+   - Seja específico: "Bloquear IP X.X.X.X" não "Bloquear atacante"
+
+7. **INVESTIGAÇÃO FORENSE** (logs, memória, etc)
+   - Sugira passos concretos e priorizados
+   - Exemplo: "1. Coletar logs de firewall dos últimos 24h, 2. Analisar memória do host X"
+
+8. **REMEDIAÇÃO** (mitigação, limpeza, fortalecimento)
+   - Diferencie mitigação imediata vs fortalecimento de longo prazo
+   - Exemplo: "Imediato: Rate limiting DNS. Longo prazo: Implementar BCP38"
+
+**REGRAS CRÍTICAS**:
+- NÃO contradiga informações entre seções
+- NÃO classifique tráfego HTTPS legítimo como exfiltração sem evidência adicional
+- NÃO liste um IP como vítima E atacante no mesmo contexto
+- NÃO classifique portas efêmeras (>49152) como suspeitas se usadas por cliente
+- NÃO mencione "alta entropia" sem especificar protocolo e porta
+- SE não há YARA, NÃO invente detecções de malware
+- SEMPRE inclua números específicos em "PADRÕES DE ATAQUE"
+
+Seja PRECISO, CONSISTENTE e CONTEXTUAL.
 """
 
     try:
@@ -1254,84 +1626,123 @@ def get_ollama_status(host=None, port=None):
 ################################################################################
 
 
-def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None):
+def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None, analysis_mode="full"):
     """
-    Função principal para análise completa de PCAP com LLM + YARA (híbrida)
-    *** ATUALIZADO: Remoção de 'detectar_assinaturas_malware' ***
+    Função principal para análise completa de PCAP/CSV com LLM + YARA (híbrida)
+    *** ATUALIZADO: Suporte para CSV + Modos de análise configuráveis ***
+    
+    Formatos suportados:
+    - .pcap, .pcapng: Análise completa com YARA
+    - .csv: Análise comportamental (sem YARA, pois não há payload)
+    
+    Modos de análise:
+    - 'full': Análise completa (YARA + LLM + Heurísticas) - PADRÃO
+    - 'llm_heuristics': LLM + Heurísticas (sem YARA)
+    - 'llm_yara': LLM + YARA (sem detecções heurísticas)
+    - 'llm_only': Apenas LLM com dados básicos de pacotes
+    - 'yara_only': Apenas análise YARA (sem LLM)
     """
     try:
+        # Detectar tipo de arquivo
+        arquivo_lower = arquivo_pcap.lower()
+        is_csv = arquivo_lower.endswith('.csv')
+        
         logger.info(
-            f"[MAIN] 🚀 Iniciando análise híbrida COMPORTAMENTAL+YARA de: {arquivo_pcap}"
+            f"[MAIN] 🚀 Iniciando análise de: {arquivo_pcap} (Tipo: {'CSV' if is_csv else 'PCAP'}, Modo: {analysis_mode.upper()})"
         )
 
         # 1. ANÁLISE COMPORTAMENTAL (para LLM)
         logger.info("[MAIN] 📊 Processando pacotes para análise comportamental...")
-        dados_pacotes = processar_pcap(arquivo_pcap)
+        
+        if is_csv:
+            dados_pacotes = processar_csv(arquivo_pcap)
+        else:
+            dados_pacotes = processar_pcap(arquivo_pcap)
 
         if not dados_pacotes:
-            raise Exception("Nenhum pacote IP encontrado no arquivo PCAP")
+            raise Exception("Nenhum pacote IP encontrado no arquivo")
 
-        # FASE 2: Análises especializadas
-        logger.info("🔍 Iniciando análise especializada...")
-        ips_origem = set(pkt["src_ip"] for pkt in dados_pacotes if pkt["src_ip"])
-        ips_destino = set(pkt["dst_ip"] for pkt in dados_pacotes if pkt["dst_ip"])
+        # Determinar quais componentes executar baseado no modo
+        run_heuristics = analysis_mode in ['full', 'llm_heuristics']
+        run_yara = analysis_mode in ['full', 'llm_yara', 'yara_only'] and not is_csv
+        run_llm = analysis_mode in ['full', 'llm_heuristics', 'llm_yara', 'llm_only']
+        
+        # Inicializar variáveis padrão
+        padroes_suspeitos = {}
+        iocs_e_dominios = {}
+        scoring_result = {"score": 0, "nivel_risco": "MÍNIMO", "evidencias": []}
+        comportamento_temporal = {}
+        
+        # FASE 2: Análises especializadas (apenas se heurísticas ativadas)
+        if run_heuristics:
+            logger.info("🔍 Iniciando análise heurística especializada...")
+            ips_origem = set(pkt["src_ip"] for pkt in dados_pacotes if pkt["src_ip"])
+            ips_destino = set(pkt["dst_ip"] for pkt in dados_pacotes if pkt["dst_ip"])
 
-        padroes_suspeitos = analisar_padroes_botnet(
-            dados_pacotes, ips_origem, ips_destino
-        )
-        dominios_suspeitos = detectar_dominios_suspeitos(dados_pacotes)
-
-        # FASE 3: Sistema de scoring avançado
-        logger.info("📊 Calculando score de malware...")
-        scoring_result = calcular_score_malware(
-            dados_pacotes, padroes_suspeitos, dominios_suspeitos
-        )
-
-        # FASE 4: (Removida - detectar_assinaturas_malware)
-
-        # FASE 5: Análise comportamental temporal
-        logger.info("⏱️ Analisando comportamento temporal (com timestamps reais)...")
-        comportamento_temporal = analisar_comportamento_temporal(dados_pacotes)
-
-        # FASE 6: Threat Intelligence
-        logger.info("🌐 Verificando Threat Intelligence...")
-        threat_intel = verificar_threat_intelligence(dados_pacotes)
-
-        # FASE 7: Formatar dados para análise LLM
-        dados_formatados = formatar_dados_para_analise(dados_pacotes)
-
-        # FASE 8: ANÁLISE YARA COMPLETA
-        logger.info("🔍 Executando análise YARA...")
-        try:
-            relatorio_yara_resultado = executar_analise_yara_completa(arquivo_pcap)
-            relatorio_yara_texto = relatorio_yara_resultado.get(
-                "relatorio_texto", "❌ Relatório YARA não disponível"
+            padroes_suspeitos = analisar_padroes_botnet(
+                dados_pacotes, ips_origem, ips_destino
             )
-        except Exception as e:
-            logger.warning(f"⚠️ Análise YARA falhou: {e}")
+            iocs_e_dominios = analisar_iocs_e_dominios(dados_pacotes)
+
+            # FASE 3: Sistema de scoring avançado
+            logger.info("📊 Calculando score de malware...")
+            scoring_result = calcular_score_malware(
+                dados_pacotes, padroes_suspeitos, iocs_e_dominios
+            )
+
+            # FASE 5: Análise comportamental temporal
+            logger.info("⏱️ Analisando comportamento temporal (com timestamps reais)...")
+            comportamento_temporal = analisar_comportamento_temporal(dados_pacotes)
+        else:
+            logger.info("⏭️ Modo '{analysis_mode}': Pulando análises heurísticas")
+
+        # FASE 6: Formatar dados para análise LLM (usando padrões já calculados ou vazios)
+        if run_llm:
+            dados_formatados = formatar_dados_para_analise(dados_pacotes, padroes_suspeitos, iocs_e_dominios)
+        else:
+            dados_formatados = "Análise LLM desativada neste modo"
+
+        # FASE 8: ANÁLISE YARA COMPLETA (baseado no modo selecionado)
+        if run_yara:
+            logger.info("🔍 Executando análise YARA...")
+            if is_csv:
+                logger.warning("⚠️ Arquivos CSV não suportam análise YARA (sem payload). Análise apenas comportamental.")
+                relatorio_yara_texto = "⚠️ Análise YARA não aplicável para arquivos CSV (sem payload binário)"
+            else:
+                try:
+                    relatorio_yara_resultado = executar_analise_yara_completa(arquivo_pcap)
+                    relatorio_yara_texto = relatorio_yara_resultado.get(
+                        "relatorio_texto", "❌ Relatório YARA não disponível"
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Análise YARA falhou: {e}")
+                    relatorio_yara_resultado = {"total_deteccoes": 0, "arquivos_extraidos": 0}
+                    relatorio_yara_texto = "❌ Análise YARA não disponível"
+        else:
+            logger.info(f"⏭️ Modo '{analysis_mode}': Pulando análise YARA")
+            relatorio_yara_texto = f"⚠️ Análise YARA desativada (modo: {analysis_mode})"
             relatorio_yara_resultado = {"total_deteccoes": 0, "arquivos_extraidos": 0}
-            relatorio_yara_texto = "❌ Análise YARA não disponível"
 
         # Adicionar contexto avançado para o LLM (sem assinaturas)
         contexto_avancado = f"""
-ANÁLISE DE SEGURANÇA AVANÇADA - Score: {scoring_result['score']}/100 ({scoring_result['nivel']})
+ANÁLISE DE SEGURANÇA AVANÇADA - Score: {scoring_result.get('score', 0)}/100 ({scoring_result.get('nivel_risco', 'MÍNIMO')})
 
 RESUMO EXECUTIVO:
 - Total de pacotes: {len(dados_pacotes)}
-- Score de malware: {scoring_result['score']}/100
-- Nível de risco: {scoring_result['nivel']}
+- Score de malware: {scoring_result.get('score', 0)}/100
+- Nível de risco: {scoring_result.get('nivel_risco', 'MÍNIMO')}
 
 EVIDÊNCIAS ENCONTRADAS:
-{chr(10).join(f"• {evidencia}" for evidencia in scoring_result['evidencias'])}
+{chr(10).join(f"• {evidencia}" for evidencia in scoring_result.get('evidencias', []))}
 
 THREAT INTELLIGENCE:
-- IPs maliciosos: {len(threat_intel['malicious_ips'])}
-- Domínios suspeitos: {len(threat_intel['malicious_domains'])}
-- Regiões suspeitas: {len(threat_intel['suspicious_countries'])}
+- IPs maliciosos: {len(iocs_e_dominios.get('malicious_ips', []))}
+- Domínios suspeitos: {len(iocs_e_dominios.get('malicious_domains', []))}
+- Regiões suspeitas: {len(iocs_e_dominios.get('suspicious_countries', []))}
 
 ANÁLISE COMPORTAMENTAL:
-- Beaconing detectado: {len(comportamento_temporal['beaconing_intervals'])} padrões
-- Burst patterns: {len(comportamento_temporal['burst_patterns'])} eventos
+- Beaconing detectado: {len(comportamento_temporal.get('beaconing_intervals', []))} padrões
+- Burst patterns: {len(comportamento_temporal.get('burst_patterns', []))} eventos
 
 ANÁLISE YARA:
 {relatorio_yara_texto}
@@ -1339,15 +1750,19 @@ ANÁLISE YARA:
 Por favor, analise estes dados considerando o contexto de segurança avançado fornecido.
 """
 
-        # FASE 9: ANÁLISE LLM HÍBRIDA
-        logger.info("🤖 Executando análise híbrida com LLM...")
-        try:
-            analise_llm = analisar_com_llm_hibrido(
-                dados_formatados, relatorio_yara_texto, modelo, host=host, port=port
-            )
-        except Exception as e_llm:
-            logger.error(f"Falha na análise LLM: {e_llm}. Retornando erro.")
-            raise Exception(f"Erro na análise LLM: {e_llm}")  # Remover fallback
+        # FASE 9: ANÁLISE LLM HÍBRIDA (apenas se ativado)
+        if run_llm:
+            logger.info("🤖 Executando análise híbrida com LLM...")
+            try:
+                analise_llm = analisar_com_llm_hibrido(
+                    dados_formatados, relatorio_yara_texto, modelo, host=host, port=port
+                )
+            except Exception as e_llm:
+                logger.error(f"Falha na análise LLM: {e_llm}. Retornando erro.")
+                raise Exception(f"Erro na análise LLM: {e_llm}")  # Remover fallback
+        else:
+            logger.info(f"⏭️ Modo '{analysis_mode}': Análise LLM desativada")
+            analise_llm = f"📊 MODO: {analysis_mode.upper()}\n\n{relatorio_yara_texto}"
 
         # FASE 10: RESULTADO FINAL COMBINADO
         total_deteccoes_yara = relatorio_yara_resultado.get("total_deteccoes", 0)
@@ -1356,15 +1771,15 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
         resumo = f"""
 📋 ANÁLISE COMPLETA FINALIZADA
 ├─ Pacotes analisados: {len(dados_pacotes)}
-├─ Score de malware: {scoring_result['score']}/100 ({scoring_result['nivel']})
-├─ IOCs encontrados: {len(threat_intel['malicious_ips']) + len(threat_intel['malicious_domains'])}
+├─ Score de malware: {scoring_result.get('score', 0)}/100 ({scoring_result.get('nivel_risco', 'MÍNIMO')})
+├─ IOCs encontrados: {len(iocs_e_dominios.get('malicious_ips', [])) + len(iocs_e_dominios.get('malicious_domains', []))}
 ├─ Detecções YARA: {total_deteccoes_yara}
 ├─ Arquivos extraídos: {arquivos_extraidos}
 └─ Modelo LLM: {modelo}
 """
 
         logger.info(
-            f"✅ Análise híbrida concluída: Score {scoring_result['score']}/100 | {total_deteccoes_yara} detecções YARA"
+            f"✅ Análise híbrida concluída: Score {scoring_result.get('score', 0)}/100 | {total_deteccoes_yara} detecções YARA"
         )
 
         network_patterns = {
@@ -1373,7 +1788,6 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
                 padroes_suspeitos.get("hosts_com_multiplas_conexoes", {})
             ),
             "port_scanning": len(padroes_suspeitos.get("port_scanning", {})),
-            "flood_attacks": len(padroes_suspeitos.get("flood_attacks", {})),
             "comunicacao_c2": len(padroes_suspeitos.get("comunicacao_c2", [])),
         }
 
@@ -1382,22 +1796,22 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
             "analysis_text": analise_llm,
             "summary": resumo,
             "raw_data": dados_formatados,
-            "malware_score": scoring_result["score"],
-            "risk_level": scoring_result["nivel"],
+            "malware_score": scoring_result.get("score", 0),
+            "risk_level": scoring_result.get("nivel_risco", "MÍNIMO"),
             "network_patterns": network_patterns,
             "malware_signatures": {},  # Removido
             "temporal_analysis": {
-                "beaconing_count": len(comportamento_temporal["beaconing_intervals"]),
-                "burst_count": len(comportamento_temporal["burst_patterns"]),
+                "beaconing_count": len(comportamento_temporal.get("beaconing_intervals", [])),
+                "burst_count": len(comportamento_temporal.get("burst_patterns", [])),
                 "periodic_patterns": len(
                     comportamento_temporal.get("periodic_communication", [])
                 ),
             },
             "threat_intelligence": {
-                "malicious_ips_count": len(threat_intel["malicious_ips"]),
-                "malicious_domains_count": len(threat_intel["malicious_domains"]),
-                "suspicious_countries_count": len(threat_intel["suspicious_countries"]),
-                "top_threats": threat_intel["malicious_ips"][:10],
+                "malicious_ips_count": len(iocs_e_dominios.get("malicious_ips", [])),
+                "malicious_domains_count": len(iocs_e_dominios.get("malicious_domains", [])),
+                "suspicious_countries_count": len(iocs_e_dominios.get("suspicious_countries", [])),
+                "top_threats": iocs_e_dominios.get("malicious_ips", [])[:10],
             },
             "yara_detections": total_deteccoes_yara,
             "extracted_files": arquivos_extraidos,

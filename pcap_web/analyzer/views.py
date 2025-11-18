@@ -32,12 +32,19 @@ def index(request):
             request.POST, request.FILES, request=request, ollama_status=ollama_status
         )
         if form.is_valid():
+            print(f"\n[UPLOAD] ===== NOVO ARQUIVO RECEBIDO =====")
+            print(f"[UPLOAD] Arquivo: {request.FILES['pcap_file'].name}")
+            print(f"[UPLOAD] Tamanho: {request.FILES['pcap_file'].size} bytes")
+            print(f"[UPLOAD] Modo: {form.cleaned_data.get('analysis_mode', 'full')}")
+            print(f"[UPLOAD] Modelo: {form.cleaned_data['llm_model']}")
+            
             # Criar registro de análise
             analysis = PCAPAnalysis(
                 original_filename=request.FILES["pcap_file"].name,
                 pcap_file=request.FILES["pcap_file"],
                 file_size=request.FILES["pcap_file"].size,
                 llm_model=form.cleaned_data["llm_model"],
+                analysis_mode=form.cleaned_data.get("analysis_mode", "full"),
                 llm_host=form.cleaned_data.get("llm_host", None)
                 or getattr(settings, "DEFAULT_LLM_HOST", "127.0.0.1"),
                 llm_port=form.cleaned_data.get("llm_port", None)
@@ -45,6 +52,10 @@ def index(request):
                 status="pending",
             )
             analysis.save()
+            
+            print(f"[UPLOAD] Análise criada com ID: {analysis.id}")
+            print(f"[UPLOAD] Caminho salvo: {analysis.pcap_file.path}")
+            print(f"[UPLOAD] Iniciando thread de processamento...")
 
             # Iniciar análise em background
             thread = threading.Thread(
@@ -53,12 +64,20 @@ def index(request):
             )
             thread.daemon = True
             thread.start()
+            
+            print(f"[UPLOAD] Thread iniciada! ================\n")
 
             messages.success(
                 request,
                 f"Arquivo {analysis.original_filename} carregado com sucesso! Análise iniciada.",
             )
             return redirect("analysis_detail", analysis_id=analysis.id)
+        else:
+            print(f"\n[UPLOAD] ❌ FORMULÁRIO INVÁLIDO!")
+            print(f"[UPLOAD] Erros: {form.errors}")
+            for field, errors in form.errors.items():
+                for error in errors:
+                    messages.error(request, f"{field}: {error}")
     else:
         form = PCAPUploadForm(request=request, ollama_status=ollama_status)
 
@@ -124,15 +143,24 @@ def process_pcap_analysis(analysis_id, host=None, port=None):
     analysis = None
     try:
         analysis = PCAPAnalysis.objects.get(id=analysis_id)
+        print(f"[DEBUG] Iniciando análise ID {analysis_id}: {analysis.original_filename}")
+        print(f"[DEBUG] Modo: {analysis.analysis_mode}, Modelo: {analysis.llm_model}")
+        
         analysis.status = "processing"
         analysis.save()
 
         start_time = time.time()
 
         # Realizar análise avançada (passando host/port se fornecidos)
+        print(f"[DEBUG] Chamando analyze_pcap_with_llm...")
         result = analyze_pcap_with_llm(
-            analysis.pcap_file.path, analysis.llm_model, host=host, port=port
+            analysis.pcap_file.path, 
+            analysis.llm_model, 
+            host=host, 
+            port=port,
+            analysis_mode=analysis.analysis_mode
         )
+        print(f"[DEBUG] Análise concluída, processando resultados...")
 
         end_time = time.time()
 
@@ -159,10 +187,13 @@ def process_pcap_analysis(analysis_id, host=None, port=None):
         )
 
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
         print(f"❌ Erro na análise {analysis_id}: {str(e)}")
+        print(f"[DEBUG] Traceback completo:\n{error_details}")
         if analysis:
             analysis.status = "error"
-            analysis.error_message = str(e)
+            analysis.error_message = f"{str(e)}\n\n{error_details}"
             analysis.save()
         else:
             # Log error if analysis object couldn't be retrieved

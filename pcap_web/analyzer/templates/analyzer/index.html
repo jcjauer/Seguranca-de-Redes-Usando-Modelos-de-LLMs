@@ -153,8 +153,8 @@
                         <div class="col-md-6">
                             <div class="upload-area" id="upload-area">
                                 <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
-                                <h5>Arraste seu arquivo PCAP aqui</h5>
-                                <p class="text-muted">ou clique para selecionar</p>
+                                <h5>Arraste seu arquivo PCAP/CSV aqui</h5>
+                                <p class="text-muted">ou clique para selecionar (.pcap, .pcapng, .csv)</p>
                                 {{ form.pcap_file }}
                             </div>
                         </div>
@@ -162,6 +162,13 @@
                             <div class="form-group mb-3">
                                 <label for="{{ form.llm_model.id_for_label }}">{{ form.llm_model.label }}:</label>
                                 {{ form.llm_model }}
+                            </div>
+                            <div class="form-group mb-3">
+                                <label for="{{ form.analysis_mode.id_for_label }}">{{ form.analysis_mode.label }}:</label>
+                                {{ form.analysis_mode }}
+                                {% if form.analysis_mode.help_text %}
+                                <small class="form-text text-muted">{{ form.analysis_mode.help_text }}</small>
+                                {% endif %}
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-8">
