@@ -1,6 +1,11 @@
 # analyzer/pcap_analyzer.py
 """
 Módulo para análise de arquivos PCAP com LLM
+
+NOTA DE CÓDIGO:
+- Variáveis técnicas (src_ip, dst_ip, timestamp) mantidas em inglês (padrão RFC/Scapy)
+- Variáveis de negócio (resumo, dominios_consultados) em português (legibilidade)
+- TODO: Padronizar para inglês completo em versão futura para internacionalização
 """
 
 import math
@@ -10,6 +15,7 @@ import logging
 import struct
 import csv
 from collections import defaultdict
+from datetime import datetime
 
 # Configurar o logger
 # Nível INFO: logger.info(), Nível AVISO: logger.warning(), Nível ERRO: logger.error()
@@ -22,9 +28,13 @@ logger = logging.getLogger(__name__)
 # sys.path.append(parent_dir)
 
 try:
-    from scapy.all import rdpcap, IP, IPv6, TCP, UDP, Raw, DNS, ARP, Ether
+    from scapy.all import rdpcap, IP, IPv6, TCP, UDP, Raw, DNS, ARP, Ether, conf
     import ollama
 
+    # HARDENING: Proteção contra PCAPs maliciosos (RCE)
+    # Desabilitar dissectors que podem executar código arbitrário
+    conf.layers.filter([Ether, IP, IPv6, TCP, UDP, DNS, ARP, Raw])
+    
     DEPENDENCIES_OK = True
 except ImportError as e:
     logger.critical(f"Erro ao importar dependências: {e}")
@@ -59,43 +69,55 @@ except ImportError:
 
 
 class Config:
-    """Central de configuração para thresholds e scores"""
+    """
+    Central de configuração para thresholds e scores
+    
+    ⚠️ MANUTENIBILIDADE: Configurações hardcoded no código
+    Problema: Alterar thresholds requer editar código-fonte e redeploy
+    
+    TODO: Migrar para arquivo externo (config.yaml ou .env)
+    Exemplo:
+        config.yaml:
+            detection:
+              syn_flood_min_packets: 2000
+              syn_flood_ack_ratio: 0.02
+              port_scan_threshold: 100
+            scoring:
+              ddos_critical: 30
+              botnet_high: 20
+    
+    Benefícios: Hot-reload, ambientes diferentes (dev/prod), auditoria de mudanças
+    """
 
     # === Thresholds de Detecção ===
     # Múltiplas Conexões (Botnet)
-    BOTNET_CONNECTIONS_LOW = 20
-    BOTNET_CONNECTIONS_MEDIUM = 30
-    BOTNET_CONNECTIONS_HIGH = 50
-    BOTNET_CONNECTIONS_CRITICAL = 100
+    BOTNET_CONNECTIONS_LOW = 50
+    BOTNET_CONNECTIONS_MEDIUM = 100
+    BOTNET_CONNECTIONS_HIGH = 200
+    BOTNET_CONNECTIONS_CRITICAL = 500
 
     # Port Scanning
-    PORT_SCAN_LOW = 30
-    PORT_SCAN_MEDIUM = 50
-    PORT_SCAN_HIGH = 100
-    PORT_SCAN_CRITICAL = 200
+    PORT_SCAN_LOW = 100
+    PORT_SCAN_MEDIUM = 200
+    PORT_SCAN_HIGH = 500
+    PORT_SCAN_CRITICAL = 1000
 
     # Flooding
-    FLOOD_LOW = 1000
-    FLOOD_MEDIUM = 2000
-    FLOOD_HIGH = 5000
-    FLOOD_CRITICAL = 10000
+    FLOOD_LOW = 500
+    FLOOD_MEDIUM = 1000
+    FLOOD_HIGH = 3000
+    FLOOD_CRITICAL = 8000
 
-    # DDoS Específico
-    SYN_FLOOD_MIN_PACKETS = 100
-    SYN_FLOOD_ACK_RATIO = 0.1  # < 10% de ACKs indica SYN Flood
-    UDP_FLOOD_THRESHOLD = 500
-    UDP_FLOOD_DNS_THRESHOLD = 1000
-    ICMP_FLOOD_LOW = 200
-    ICMP_FLOOD_HIGH = 1000
-    ACK_FLOOD_THRESHOLD = 300
-    HTTP_SLOWLORIS_CONNECTIONS = 50
-    ARP_SPOOFING_THRESHOLD = 50
-    DNS_AMPLIFICATION_MIN_SIZE = 512  # bytes
-    DNS_AMPLIFICATION_MIN_COUNT = 10
-    DNS_AMPLIFICATION_MIN_BYTES = 10000
-    FRAGMENT_ATTACK_SMALL_PKT_SIZE = 100
-    FRAGMENT_ATTACK_THRESHOLD = 500
-    DDOS_DISTRIBUTED_SOURCES = 10  # Número mínimo de fontes para DDoS distribuído
+    # DDoS Específico -  DETECTAR ATAQUES REAIS
+    SYN_FLOOD_MIN_PACKETS = 300       
+    SYN_FLOOD_ACK_RATIO = 0.1         
+    UDP_FLOOD_THRESHOLD = 1000        
+    UDP_FLOOD_DNS_THRESHOLD = 500      
+    ICMP_FLOOD_LOW = 500              
+    ICMP_FLOOD_HIGH = 2000
+    ACK_FLOOD_THRESHOLD = 1000
+    ARP_SPOOFING_THRESHOLD = 100       # Pacotes ARP de um mesmo IP
+    FRAGMENT_ATTACK_THRESHOLD = 100    # Fragmentos IP para um mesmo alvo
     
     # Anomalias de Tráfego
     SPIKE_MULTIPLIER = 10  # Tráfego 10x acima da média é spike
@@ -152,52 +174,117 @@ class Config:
     SCORE_ASIAN_DOMAINS_LOW = 2
 
 
-# === Listas de IOCs Globais ===
-GLOBAL_MALICIOUS_DOMAINS = [
-    "yl.liufen.com",
-    "hqs9.cnzz.com",
-    "doudouguo.com",
-    "dw156.tk",
-    "lckj77.com",
-    "cnzz.com",
-]
+################################################################################
+# WHITELISTS DE IPs CONHECIDOS (Previne Falsos Positivos Críticos)
+################################################################################
 
-GLOBAL_SUSPICIOUS_TLDS = [
-    ".tk",
-    ".ml",
-    ".ga",
-    ".cf",
-    ".xyz",
-]
+# CRÍTICO: LLMs locais (llama3, qwen, gemma) NÃO têm conhecimento atualizado de ASNs
+# Eles inventam ASNs, confundem 8.8.8.8 com malware, acham 1.1.1.1 suspeito
+# Whitelists previnem falsos positivos em tráfego legítimo (YouTube, Netflix, etc)
 
-GLOBAL_ASIAN_DOMAIN_KEYWORDS = [
-    "china",
-    "asia",
-    ".cn",
-    ".hk",
-    ".tw",
-]
+# ⚠️ LIMITAÇÃO CONHECIDA: Whitelists estáticas podem gerar falsos negativos
+# IPs de nuvem (AWS, Azure, GCP) são reciclados constantemente
+# Atacantes podem alugar IPs whitelistados para evasão
+# TODO: Migrar para consulta DNS reversa (PTR) ou base GeoIP/ASN atualizável
 
-GLOBAL_MALICIOUS_IPS = {
-    "185.220.101.23": "Tor exit node",
-    "60.221.254.19": "Known C2 server (from sample)",
-    "125.43.78.107": "Suspicious IP range",
-    "1.2.3.4": "Known botnet IP",
-    "5.6.7.8": "Malware distribution",
+KNOWN_GOOD_IPS = {
+    # Google DNS e serviços
+    "8.8.8.8", "8.8.4.4",
+    # Cloudflare DNS
+    "1.1.1.1", "1.0.0.1",
+    # OpenDNS
+    "208.67.222.222", "208.67.220.220",
 }
 
-GLOBAL_SUSPICIOUS_COUNTRY_PREFIXES = [
-    "60.",
-    "125.",
-    "185.",  # Simulação de geolocalização
+# Prefixos de ranges conhecidos (matching parcial para performance)
+KNOWN_GOOD_PREFIXES = [
+    # Google LLC (AS15169)
+    "142.250.", "142.251.", "172.217.", "172.253.", "74.125.", "216.58.",
+    # Cloudflare (AS13335)
+    "104.16.", "104.17.", "104.18.", "104.19.", "104.20.", "104.21.",
+    "104.22.", "104.23.", "104.24.", "104.25.", "104.26.", "104.27.",
+    "162.158.", "172.64.", "172.65.", "172.66.", "172.67.", "173.245.",
+    # Amazon AWS (AS16509, AS14618)
+    "52.", "54.", "18.", "3.", "13.", "34.", "35.",
+    # Microsoft Azure (AS8075)
+    "40.", "13.", "20.", "23.", "51.", "52.", "104.",
+    # Akamai (AS20940)
+    "23.0.", "23.1.", "23.2.", "23.32.", "23.33.", "23.34.", "23.35.",
+    "23.192.", "23.193.", "23.194.", "23.195.", "23.196.",
+    "104.64.", "104.65.", "104.66.", "104.67.", "104.68.", "104.69.",
+    # Fastly CDN (AS54113)
+    "151.101.",
 ]
 
-GLOBAL_SUSPICIOUS_COUNTRIES = [
-    "CN",
-    "RU",
-    "KP",
-    "IR",  # Países com alta atividade maliciosa
+# Domínios conhecidos legítimos
+KNOWN_GOOD_DOMAINS = [
+    # Big Tech
+    "google.com", "youtube.com", "googleapis.com", "gstatic.com", "ggpht.com",
+    "facebook.com", "fbcdn.net", "whatsapp.com", "instagram.com",
+    "microsoft.com", "windows.com", "live.com", "outlook.com", "office.com",
+    "apple.com", "icloud.com", "cdn-apple.com",
+    "amazon.com", "amazonaws.com", "cloudfront.net",
+    # CDNs
+    "cloudflare.com", "akamai.com", "akamaihd.net", "fastly.net",
+    # Streaming
+    "netflix.com", "nflxvideo.net", "nflxext.com", "nflximg.com",
+    "spotify.com", "twitch.tv", "ttvnw.net",
+    # Outros
+    "wikipedia.org", "wikimedia.org",
 ]
+
+def is_known_good_ip(ip):
+    """Verifica se IP pertence a provedor conhecido legítimo"""
+    if ip in KNOWN_GOOD_IPS:
+        return True
+    for prefix in KNOWN_GOOD_PREFIXES:
+        if ip.startswith(prefix):
+            return True
+    return False
+
+def is_known_good_domain(domain):
+    """Verifica se domínio é de provedor conhecido legítimo"""
+    domain_lower = domain.lower().strip(".")
+    for good_domain in KNOWN_GOOD_DOMAINS:
+        if domain_lower == good_domain or domain_lower.endswith("." + good_domain):
+            return True
+    return False
+
+def is_local_ip(ip):
+    """Verifica se IP é local/privado (RFC1918, IPv6 link-local, loopback)"""
+    if not ip:
+        return False
+    
+    # IPv4 privado (RFC1918)
+    if ip.startswith("10.") or ip.startswith("192.168.") or ip.startswith("172."):
+        # 172.16.0.0 - 172.31.255.255
+        if ip.startswith("172."):
+            try:
+                second_octet = int(ip.split(".")[1])
+                if 16 <= second_octet <= 31:
+                    return True
+            except (ValueError, IndexError):
+                pass
+        else:
+            return True
+    
+    # Loopback
+    if ip.startswith("127.") or ip == "::1":
+        return True
+    
+    # IPv6 link-local (fe80::/10)
+    if ip.startswith("fe80:") or ip.startswith("fe80::"):
+        return True
+    
+    # IPv6 ULA (Unique Local Address - fc00::/7)
+    if ip.startswith("fc") or ip.startswith("fd"):
+        return True
+    
+    # IPv6 multicast (ff00::/8)
+    if ip.startswith("ff"):
+        return True
+    
+    return False
 
 
 ################################################################################
@@ -206,83 +293,66 @@ GLOBAL_SUSPICIOUS_COUNTRIES = [
 
 
 def analisar_iocs_e_dominios(dados):
-    """Analisa IOCs, domínios suspeitos e threat intelligence em uma única passagem
-    *** OTIMIZADO: Unifica detectar_dominios_suspeitos + verificar_threat_intelligence ***
     """
-    # Usar listas de IOCs globais
-    dominios_maliciosos = GLOBAL_MALICIOUS_DOMAINS
-    suspicious_tlds = GLOBAL_SUSPICIOUS_TLDS
-    asian_keywords = GLOBAL_ASIAN_DOMAIN_KEYWORDS
-    malicious_ips = GLOBAL_MALICIOUS_IPS
-    suspicious_prefixes = GLOBAL_SUSPICIOUS_COUNTRY_PREFIXES
+    Coleta domínios e IPs acessados para análise pela IA
+    Separa IPs/domínios conhecidos (whitelist) de desconhecidos (análise IA)
+    """
     
     resultado = {
-        # Domínios
+        # Lista de todos os domínios DNS vistos
+        "dominios_consultados": [],
+        # IPs únicos de destino (FILTRADOS: sem IPs conhecidos legítimos)
+        "ips_destino_unicos": set(),
+        # IPs conhecidos legítimos (para relatório)
+        "ips_legitimos": set(),
+        # Domínios conhecidos legítimos (para relatório)
+        "dominios_legitimos": [],
+        # Campos mantidos para compatibilidade
         "dominios_suspeitos": [],
-        "user_agents_maliciosos": [],
-        "short_urls": [],
-        "asian_domains": [],
-        # Threat Intelligence
         "malicious_ips": [],
         "malicious_domains": [],
         "suspicious_countries": [],
-        "tor_nodes": [],
-        "confidence_scores": {},
+        "asian_domains": [],
     }
 
     for pkt in dados:
-        src_ip = pkt.get("src_ip")
         dst_ip = pkt.get("dst_ip")
+        src_ip = pkt.get("src_ip")
         dns_query = pkt.get("dns_query")
         
-        # Análise de DNS queries
+        # Coletar domínios DNS (separar conhecidos de desconhecidos)
         if dns_query:
-            query = dns_query.lower()
-
-            # Verificar domínios maliciosos conhecidos
-            for dominio in dominios_maliciosos:
-                if dominio in query:
-                    resultado["dominios_suspeitos"].append({
-                        "query": query,
-                        "src_ip": src_ip,
-                        "tipo": "dominio_malicioso_conhecido",
-                    })
-                    resultado["malicious_domains"].append({
-                        "domain": query,
-                        "src": src_ip,
-                        "categoria": "Malware/Click fraud",
-                        "confidence": 0.85,
-                    })
-
-            # Detectar domínios com TLD suspeitos
-            if any(tld in query for tld in suspicious_tlds):
-                resultado["dominios_suspeitos"].append({
-                    "query": query,
-                    "src_ip": src_ip,
-                    "tipo": "tld_suspeito"
-                })
-
-            # Detectar domínios asiáticos suspeitos
-            if any(keyword in query for keyword in asian_keywords):
-                resultado["asian_domains"].append(query)
+            query = dns_query.lower().strip('.')
+            if query:
+                # Verificar se é domínio conhecido legítimo
+                if is_known_good_domain(query):
+                    if query not in resultado["dominios_legitimos"]:
+                        resultado["dominios_legitimos"].append(query)
+                else:
+                    # Domínio desconhecido - enviar para IA analisar
+                    if not any(d["dominio"] == query for d in resultado["dominios_consultados"]):
+                        resultado["dominios_consultados"].append({
+                            "dominio": query,
+                            "src_ip": src_ip,
+                            "timestamp": pkt.get("timestamp", 0),
+                        })
         
-        # Análise de IPs maliciosos
-        if dst_ip and dst_ip in malicious_ips:
-            resultado["malicious_ips"].append({
-                "ip": dst_ip,
-                "src": src_ip,
-                "categoria": malicious_ips[dst_ip],
-                "confidence": 0.9,
-            })
+        # Coletar IPs de destino (separar conhecidos de desconhecidos)
+        if dst_ip and dst_ip not in ["Raw Data", "Unknown"]:
+            if is_known_good_ip(dst_ip):
+                resultado["ips_legitimos"].add(dst_ip)
+            else:
+                resultado["ips_destino_unicos"].add(dst_ip)
         
-        # Verificar ranges de IP suspeitos
-        if dst_ip and any(dst_ip.startswith(prefix) for prefix in suspicious_prefixes):
-            resultado["suspicious_countries"].append({
-                "ip": dst_ip,
-                "country": "Suspicious region",
-                "confidence": 0.6
-            })
+        # Verificar IP de origem também
+        if src_ip and src_ip not in ["Raw Data", "Unknown"]:
+            if is_known_good_ip(src_ip):
+                resultado["ips_legitimos"].add(src_ip)
 
+    # Converter sets para listas para serialização
+    resultado["ips_destino_unicos"] = list(resultado["ips_destino_unicos"])
+    resultado["ips_legitimos"] = list(resultado["ips_legitimos"])
+    
     return resultado
 
 
@@ -722,149 +792,83 @@ def processar_csv(arquivo_csv):
 
 def processar_pcap(arquivo_pcap):
     """
-    Processa arquivo PCAP e extrai informações dos pacotes
-    *** CORRIGIDO: Adicionado 'timestamp' a todos os pacotes ***
+    Processa arquivo PCAP em streaming (evita OOM em arquivos grandes)
+    Usa PcapReader para ler pacote por pacote sem carregar tudo na RAM
     """
+    from scapy.utils import PcapReader
+    
     try:
-        pacotes = rdpcap(arquivo_pcap)
         resumo = []
         pacotes_sem_ip = 0
 
-        for pkt in pacotes:
-            info = None
-            try:
-                timestamp = float(pkt.time) if hasattr(pkt, 'time') else 0.0
-            except (ValueError, TypeError, AttributeError):
-                timestamp = 0.0
-
-            # Processar pacotes IP
-            if IP in pkt:
-                info = {
-                    "timestamp": timestamp,  # <-- CORREÇÃO
-                    "src_ip": pkt[IP].src,
-                    "dst_ip": pkt[IP].dst,
-                    "protocol": pkt[IP].proto,
-                    "ip_version": 4,
-                    "length": len(pkt),
-                    "entropy": None,
-                    "src_port": None,
-                    "dst_port": None,
-                    "tcp_flags": None,
-                    "dns_query": None,
-                }
-
-            # Processar pacotes IPv6
-            elif IPv6 in pkt:
-                info = {
-                    "timestamp": timestamp,  # <-- CORREÇÃO
-                    "src_ip": pkt[IPv6].src,
-                    "dst_ip": pkt[IPv6].dst,
-                    "protocol": pkt[IPv6].nh,  # Next Header
-                    "ip_version": 6,
-                    "length": len(pkt),
-                    "entropy": None,
-                    "src_port": None,
-                    "dst_port": None,
-                    "tcp_flags": None,
-                    "dns_query": None,
-                }
-
-            # Processar pacotes ARP
-            elif ARP in pkt:
-                info = {
-                    "timestamp": timestamp,  # <-- CORREÇÃO
-                    "src_ip": pkt[ARP].psrc,
-                    "dst_ip": pkt[ARP].pdst,
-                    "protocol": "ARP",
-                    "ip_version": "ARP",
-                    "length": len(pkt),
-                    "entropy": None,
-                    "src_port": None,
-                    "dst_port": None,
-                    "tcp_flags": None,
-                    "dns_query": None,
-                    "arp_op": pkt[ARP].op,  # Operação ARP (request/reply)
-                }
-
-            # Tentar interpretar pacotes Raw como possíveis dados IP
-            elif Raw in pkt and len(pkt) > 20:
+        with PcapReader(arquivo_pcap) as pcap_reader:
+            for pkt in pcap_reader:
+                info = None
                 try:
-                    raw_data = bytes(pkt[Raw].load)
-                    if len(raw_data) >= 20:
-                        version = (raw_data[0] >> 4) & 0xF
-                        if version == 4:  # IPv4
-                            try:
-                                ip_pkt = IP(raw_data)
-                                info = {
-                                    "timestamp": timestamp,
-                                    "src_ip": ip_pkt.src,
-                                    "dst_ip": ip_pkt.dst,
-                                    "protocol": ip_pkt.proto,
-                                    "ip_version": 4,
-                                    "length": len(pkt),
-                                    "entropy": None,
-                                    "src_port": None,
-                                    "dst_port": None,
-                                    "tcp_flags": None,
-                                    "dns_query": None,
-                                    "raw_interpreted": True,
-                                }
-                                if TCP in ip_pkt:
-                                    info["tcp_flags"] = str(ip_pkt[TCP].flags)
-                                    info["src_port"] = ip_pkt[TCP].sport
-                                    info["dst_port"] = ip_pkt[TCP].dport
-                                elif UDP in ip_pkt:
-                                    info["src_port"] = ip_pkt[UDP].sport
-                                    info["dst_port"] = ip_pkt[UDP].dport
-                            except Exception:
-                                logger.debug(f"Raw IPv4 inválido ou malformado")
-                                info = None
+                    timestamp = float(pkt.time) if hasattr(pkt, 'time') else 0.0
+                except (ValueError, TypeError, AttributeError):
+                    timestamp = 0.0
 
-                        elif version == 6:  # IPv6
-                            try:
-                                ipv6_pkt = IPv6(raw_data)
-                                info = {
-                                    "timestamp": timestamp,
-                                    "src_ip": ipv6_pkt.src,
-                                    "dst_ip": ipv6_pkt.dst,
-                                    "protocol": ipv6_pkt.nh,
-                                    "ip_version": 6,
-                                    "length": len(pkt),
-                                    "entropy": None,
-                                    "src_port": None,
-                                    "dst_port": None,
-                                    "tcp_flags": None,
-                                    "dns_query": None,
-                                    "raw_interpreted": True,
-                                }
-                            except Exception:
-                                logger.debug(f"Raw IPv6 inválido ou malformado")
-                                info = None
-                except (ValueError, IndexError, AttributeError, struct.error) as e_raw:
-                    logger.debug(f"Falha ao interpretar Raw data: {e_raw}")
-                    # Se falhar a interpretação, criar entrada genérica para dados Raw
-                    raw_data = bytes(pkt[Raw].load)
+                # Processar pacotes IP
+                if IP in pkt:
                     info = {
-                        "timestamp": timestamp,  # <-- CORREÇÃO
-                        "src_ip": "Raw Data",
-                        "dst_ip": "Unknown",
-                        "protocol": "Raw",
-                        "ip_version": "Raw",
+                        "timestamp": timestamp,
+                        "src_ip": pkt[IP].src,
+                        "dst_ip": pkt[IP].dst,
+                        "protocol": pkt[IP].proto,
+                        "ip_version": 4,
                         "length": len(pkt),
-                        "entropy": (
-                            round(calcular_entropia(raw_data), 4) if raw_data else 0
-                        ),
+                        "entropy": None,
                         "src_port": None,
                         "dst_port": None,
                         "tcp_flags": None,
                         "dns_query": None,
-                        "raw_data_hex": raw_data[:32].hex() if raw_data else "",
                     }
 
-            # Se encontrou um tipo de pacote suportado
-            if info:
-                # Só processar TCP/UDP se não foi interpretado como Raw
-                if not info.get("raw_interpreted", False):
+                # Processar pacotes IPv6
+                elif IPv6 in pkt:
+                    info = {
+                        "timestamp": timestamp,
+                        "src_ip": pkt[IPv6].src,
+                        "dst_ip": pkt[IPv6].dst,
+                        "protocol": pkt[IPv6].nh,  # Next Header
+                        "ip_version": 6,
+                        "length": len(pkt),
+                        "entropy": None,
+                        "src_port": None,
+                        "dst_port": None,
+                        "tcp_flags": None,
+                        "dns_query": None,
+                    }
+
+                # Processar pacotes ARP (coletar MAC para detecção de spoofing)
+                elif ARP in pkt:
+                    info = {
+                        "timestamp": timestamp,
+                        "src_ip": pkt[ARP].psrc,
+                        "dst_ip": pkt[ARP].pdst,
+                        "protocol": "ARP",
+                        "ip_version": "ARP",
+                        "length": len(pkt),
+                        "entropy": None,
+                        "src_port": None,
+                        "dst_port": None,
+                        "tcp_flags": None,
+                        "dns_query": None,
+                        "arp_op": pkt[ARP].op,
+                        "src_mac": pkt[ARP].hwsrc if hasattr(pkt[ARP], 'hwsrc') else None,
+                        "dst_mac": pkt[ARP].hwdst if hasattr(pkt[ARP], 'hwdst') else None,
+                    }
+
+                # Pacotes não-IP (Raw/Unknown): ignorar
+                # Se Scapy não parseou, provavelmente é camada 2 ou corrupto
+                else:
+                    pacotes_sem_ip += 1
+                    info = None
+
+                # Se encontrou um tipo de pacote suportado
+                if info:
+                    # Processar TCP/UDP
                     if TCP in pkt:
                         info["tcp_flags"] = str(pkt[TCP].flags)
                         info["src_port"] = pkt[TCP].sport
@@ -875,39 +879,37 @@ def processar_pcap(arquivo_pcap):
                         if DNS in pkt:
                             try:
                                 if pkt[DNS].qd:
-                                    info["dns_query"] = pkt[DNS].qd.qname.decode(
-                                        "utf-8"
-                                    )
+                                    info["dns_query"] = pkt[DNS].qd.qname.decode("utf-8")
                             except (AttributeError, UnicodeDecodeError, IndexError):
                                 pass
 
-                # Calcular entropia do payload se ainda não foi calculada
-                if not info.get("entropy") and Raw in pkt:
-                    payload = bytes(pkt[Raw].load)
-                    info["entropy"] = round(calcular_entropia(payload), 4)
+                    # Calcular entropia do payload
+                    # 🚀 OTIMIZAÇÃO: Amostragem para evitar cálculo em milhões de pacotes
+                    # Problema: PCAP de 5GB → milhões de cálculos de entropia → horas
+                    # Solução: Amostrar apenas 1 em cada 100 pacotes + limitar payload a 1KB
+                    if Raw in pkt and len(resumo) % 100 == 0:  # Amostragem 1%
+                        try:
+                            payload = bytes(pkt[Raw].load)
+                            # Limitar a primeiros 1024 bytes (evita processar payloads gigantes)
+                            if len(payload) > 1024:
+                                payload = payload[:1024]
+                            info["entropy"] = round(calcular_entropia(payload), 4)
+                        except Exception:
+                            info["entropy"] = None
 
-                resumo.append(info)
-            else:
-                pacotes_sem_ip += 1
+                    resumo.append(info)
+                else:
+                    pacotes_sem_ip += 1
 
         if not resumo:
-            tipos_pacotes = []
-            for pkt in pacotes[:10]:  # Analisar apenas os primeiros 10 pacotes
-                if Ether in pkt:
-                    tipos_pacotes.append(f"Ethernet (tipo: {hex(pkt[Ether].type)})")
-                elif Raw in pkt:
-                    tipos_pacotes.append("Raw Data")
-                else:
-                    tipos_pacotes.append(str(type(pkt).__name__))
-
             raise Exception(
-                f"Nenhum pacote IP/IPv6/ARP/Raw interpretável encontrado no arquivo PCAP. "
-                f"Total de pacotes: {len(pacotes)}, "
-                f"Pacotes não suportados: {pacotes_sem_ip}. "
-                f"Tipos encontrados: {', '.join(set(tipos_pacotes[:5]))}. "
+                f"Nenhum pacote IP/IPv6/ARP encontrado no arquivo PCAP. "
+                f"Pacotes processados: {pacotes_sem_ip + len(resumo)}, "
+                f"Pacotes não-IP: {pacotes_sem_ip}. "
                 f"Este arquivo pode conter protocolos não suportados ou dados corrompidos."
             )
 
+        logger.info(f"✅ PCAP processado: {len(resumo)} pacotes válidos, {pacotes_sem_ip} não-IP ignorados")
         return resumo
 
     except Exception as e:
@@ -919,6 +921,17 @@ def analisar_padroes_botnet(dados, ips_origem, ips_destino):
     """
     Analisa padrões específicos de botnet e malware
     *** OTIMIZADO: Loop único consolidado com validação consistente ***
+    
+    ⚠️ REFATORAÇÃO NECESSÁRIA (God Method Anti-Pattern):
+    Esta função mistura múltiplas responsabilidades (DDoS, port scan, C2, vazamento de dados)
+    em um único loop gigante, tornando testes unitários e manutenção difíceis.
+    
+    TODO: Separar em módulos especializados:
+    - detect_ddos_patterns()
+    - detect_port_scans()
+    - detect_c2_communication()
+    - detect_data_exfiltration()
+    - detect_traffic_anomalies()
     """
     padroes = {
         "hosts_com_multiplas_conexoes": {},
@@ -933,30 +946,42 @@ def analisar_padroes_botnet(dados, ips_origem, ips_destino):
     cfg = Config
 
     # Inicializar detectores
+    # ===================================================================
+    # CORRELAÇÃO BIDIRECIONAL: Rastreia handshake TCP completo (SYN + SYN-ACK)
+    # Chave: (IP_CLIENTE, IP_SERVIDOR, PORTA_SERVIDOR)
+    # SYN (ida): Cliente → Servidor => chave = (src, dst, dst_port)
+    # SYN-ACK (volta): Servidor → Cliente => INVERTE para chave = (dst, src, src_port)
+    # ===================================================================
+    tcp_handshakes = defaultdict(lambda: {"syn": 0, "synack": 0, "sources": set()})
+    
+    # Volume por ALVO (para detectar DDoS distribuído)
+    udp_target_volume = defaultdict(lambda: {"count": 0, "sources": set()})
+    icmp_target_volume = defaultdict(int)
+    ack_flood_target = defaultdict(int)
+    fragmented_by_target = defaultdict(int)
+
+    # Contadores auxiliares
     conexoes_por_host = defaultdict(set)
-    ddos_detector = defaultdict(lambda: {"syn": 0, "ack": 0, "rst": 0, "total": 0})
-    syn_sources = defaultdict(set)
-    udp_flood_detector = defaultdict(int)
-    udp_sources = defaultdict(set)
-    icmp_flood_detector = defaultdict(int)
-    ack_flood_detector = defaultdict(int)
-    http_connections = defaultdict(int)
-    arp_table = defaultdict(int)
-    dns_responses = defaultdict(lambda: {"count": 0, "total_size": 0})
-    fragmented_packets = defaultdict(int)
     port_scan_detector = defaultdict(set)
     portas_suspeitas = defaultdict(int)
     uploads = defaultdict(int)
+    high_entropy_packets = []
+    MAX_ENTROPY_SAMPLES = 1000  # Limite para prevenir OOM em PCAPs grandes
     traffic_by_hour = defaultdict(int)
+    invalid_timestamps = 0  # Contador para debug
     protocol_count = defaultdict(int)
     tiny_packets = 0
     jumbo_packets = 0
-    high_entropy_packets = []
+    arp_table = defaultdict(int)
+    arp_ip_to_mac = defaultdict(set)
     
     portas_conhecidas = {20, 21, 22, 23, 25, 53, 80, 110, 143, 443, 465, 587, 993, 995, 3306, 3389, 5432, 8080, 8443}
 
     # ======== LOOP ÚNICO CONSOLIDADO ========
+    # 🚀 OTIMIZAÇÃO: Adicionar contador para amostrar operações pesadas
+    packet_counter = 0
     for pkt in dados:
+        packet_counter += 1
         src_ip = pkt.get("src_ip")
         dst_ip = pkt.get("dst_ip")
         src_port = pkt.get("src_port")
@@ -968,82 +993,118 @@ def analisar_padroes_botnet(dados, ips_origem, ips_destino):
         timestamp = pkt.get("timestamp", 0)
         ip_version = pkt.get("ip_version")
 
-        # Validação de IP consistente
+        # Validação de IP consistente - Early return para performance
         ip_valid = src_ip and dst_ip and src_ip not in ["Raw Data", "Unknown"] and dst_ip not in ["Raw Data", "Unknown"]
         
-        # 1. Hosts com múltiplas conexões (apenas IPs válidos)
-        if ip_valid:
-            is_src_internal = src_ip.startswith(("10.", "192.168.", "172."))
-            is_dst_external = not dst_ip.startswith(("10.", "192.168.", "172."))
-            
-            if is_src_internal and is_dst_external:
+        # Early return: ignora pacotes sem IPs válidos (ARP sem IP, raw data)
+        if not ip_valid:
+            continue
+        
+        # 1. Hosts com múltiplas conexões
+        is_src_internal = src_ip.startswith(("10.", "192.168.", "172."))
+        is_dst_external = not dst_ip.startswith(("10.", "192.168.", "172."))
+        
+        if is_src_internal and is_dst_external:
                 conexoes_por_host[src_ip].add(dst_ip)
                 uploads[src_ip] += length  # 2. Data leakage tracking
         
-        # 3. DDoS SYN Flood detection
-        if ip_valid and dst_port and tcp_flags:
-            key = (src_ip, dst_ip, dst_port)
-            ddos_detector[key]["total"] += 1
+        # Ignorar tráfego legítimo conhecido (evita falsos positivos)
+        if is_known_good_ip(dst_ip) or is_known_good_ip(src_ip):
+            continue  # ← IMPORTANTE: não contar ataques contra Google, Cloudflare, etc.
+
+        # 2. TCP: Correlação bidirecional (SYN + SYN-ACK)
+        if protocol == 6 and tcp_flags and src_port and dst_port:
+            flags_str = str(tcp_flags)
             
-            if "S" in tcp_flags and "A" not in tcp_flags:
-                ddos_detector[key]["syn"] += 1
-                syn_sources[dst_ip].add(src_ip)
-            elif "A" in tcp_flags:
-                ddos_detector[key]["ack"] += 1
-            elif "R" in tcp_flags:
-                ddos_detector[key]["rst"] += 1
+            # Cenário 1: Cliente enviando SYN (Ida) - Cliente → Servidor
+            if "S" in flags_str and "A" not in flags_str:
+                # Chave: (Cliente, Servidor, Porta_Servidor)
+                key = (src_ip, dst_ip, dst_port)
+                tcp_handshakes[key]["syn"] += 1
+                tcp_handshakes[key]["sources"].add(src_ip)
+                
+                # Port scan detection (ignora portas efêmeras)
+                if dst_port < 10000:
+                    port_scan_detector[(src_ip, dst_ip)].add(dst_port)
             
-            # 4. ACK Flood detection
-            if "A" in tcp_flags and "S" not in tcp_flags and "F" not in tcp_flags:
-                ack_flood_detector[key] += 1
-            
-            # 5. Slowloris detection
-            if dst_port in [80, 443, 8080] and "S" in tcp_flags:
-                http_connections[(src_ip, dst_ip)] += 1
+            # Cenário 2: Servidor respondendo SYN-ACK (Volta) - Servidor → Cliente
+            elif "S" in flags_str and "A" in flags_str:
+                # INVERSÃO DA CHAVE: Servidor é src agora, mas na chave ele é dst
+                # Chave reversa: (Cliente, Servidor, Porta_Servidor)
+                key_reverse = (dst_ip, src_ip, src_port)
+                
+                # Só contabiliza se já vimos o SYN de ida (evita ruído)
+                if key_reverse in tcp_handshakes:
+                    tcp_handshakes[key_reverse]["synack"] += 1
+
+            # ACK Flood: APENAS ACKs órfãos (sem SYN prévio)
+            # ACKs normais de conexões estabelecidas são legítimos
+            if "A" in flags_str and "S" not in flags_str and "F" not in flags_str:
+                # Verificar se existe handshake estabelecido (SYN foi visto)
+                key_forward = (src_ip, dst_ip, dst_port)
+                key_reverse = (dst_ip, src_ip, src_port if src_port else 0)
+                
+                # Só conta como flood se NÃO existe SYN anterior (ACK órfão)
+                if key_forward not in tcp_handshakes and key_reverse not in tcp_handshakes:
+                    ack_flood_target[(dst_ip, dst_port)] += 1
+
+        # 3. UDP Flood: agregado por alvo (detecta DDoS distribuído)
+        if protocol == 17:  # UDP não requer dst_port (pode ser fragmentado)
+            udp_target_volume[dst_ip]["count"] += 1
+            if src_ip:  # Adiciona source apenas se válido
+                udp_target_volume[dst_ip]["sources"].add(src_ip)
+
+        # 4. ICMP Flood
+        if protocol == 1:
+            icmp_target_volume[dst_ip] += 1
         
-        # 6. UDP Flood detection
-        if ip_valid and dst_port and protocol == 17:
-            key = (src_ip, dst_ip, dst_port)
-            udp_flood_detector[key] += 1
-            udp_sources[dst_ip].add(src_ip)
-        
-        # 7. ICMP Flood detection
-        if ip_valid and protocol == 1:
-            icmp_flood_detector[(src_ip, dst_ip)] += 1
-        
-        # 8. ARP Spoofing
+        # 8. ARP Spoofing (CORRIGIDO: detectar conflitos de MAC)
         if ip_version == "ARP" and src_ip:
             arp_table[src_ip] += 1
+            # Rastrear múltiplos MACs para mesmo IP (spoofing)
+            src_mac = pkt.get("src_mac")
+            if src_mac:
+                arp_ip_to_mac[src_ip].add(src_mac)
         
-        # 9. DNS Amplification
-        if src_port == 53 and length > cfg.DNS_AMPLIFICATION_MIN_SIZE and src_ip:
-            dns_responses[src_ip]["count"] += 1
-            dns_responses[src_ip]["total_size"] += length
+        # 9. Fragmentação IP (conta por ALVO) - Suporta dict e Scapy Packet
+        if isinstance(pkt, dict) and pkt.get("fragmented"):
+            fragmented_by_target[dst_ip] += 1
+        elif hasattr(pkt, "haslayer") and pkt.haslayer(IP):
+            ip_layer = pkt[IP]
+            is_fragmented = bool(ip_layer.flags & 0x1) or ip_layer.frag > 0
+            if is_fragmented:
+                fragmented_by_target[dst_ip] += 1
+            
+        # 12. Conexões suspeitas (portas não-padrão)
+        if dst_port and dst_port not in portas_conhecidas and dst_port < 49152:
+            portas_suspeitas[f"{src_ip} → {dst_ip}:{dst_port}"] += 1
         
-        # 10. Fragmentação IP
-        if ip_valid and length < cfg.FRAGMENT_ATTACK_SMALL_PKT_SIZE:
-            fragmented_packets[src_ip] += 1
-        
-        # 11. Port scanning (incluindo portas >1024 comuns)
-        if ip_valid and dst_port:
-            # Detectar scan em portas relevantes (não apenas <1024)
-            if dst_port not in portas_conhecidas and dst_port < 49152:
-                port_scan_detector[(src_ip, dst_ip)].add(dst_port)
-                # 12. Conexões suspeitas
-                portas_suspeitas[f"{src_ip} → {dst_ip}:{dst_port}"] += 1
-        
-        # 13. Alta entropia (C2)
-        if ip_valid and entropy and entropy > cfg.C2_MIN_ENTROPY:
-            high_entropy_packets.append(pkt)
+        # 13. Alta entropia (C2) - ignora TLS/HTTPS e IPs conhecidos
+        # ⚠️ LIMITAÇÃO: Binários comprimidos (ZIP, JPG, vídeos) geram falsos positivos
+        if entropy and entropy > cfg.C2_MIN_ENTROPY:
+            portas_tls = {443, 8443, 465, 587, 993, 995, 636, 989, 990, 992, 5061, 853}
+            eh_tls = dst_port in portas_tls or src_port in portas_tls
+            
+            # Filtrar: NÃO alertar se porta TLS OU IP conhecido
+            if not eh_tls and not is_known_good_ip(src_ip) and not is_known_good_ip(dst_ip):
+                # Limite: armazena até MAX_ENTROPY_SAMPLES (previne OOM)
+                if len(high_entropy_packets) < MAX_ENTROPY_SAMPLES:
+                    high_entropy_packets.append(pkt)
+                # Amostragem após limite (reservoir sampling)
+                elif packet_counter % 100 == 0:  # 1% dos pacotes após limite
+                    import random
+                    idx = random.randint(0, MAX_ENTROPY_SAMPLES - 1)
+                    high_entropy_packets[idx] = pkt
         
         # 14. Tráfego por hora
         if timestamp > 0:
-            from datetime import datetime
             try:
                 hour = datetime.fromtimestamp(timestamp).hour
                 traffic_by_hour[hour] += 1
-            except (ValueError, OSError):
-                pass
+            except (ValueError, OSError) as e:
+                invalid_timestamps += 1
+                if invalid_timestamps <= 5:  # Log primeiros 5 erros
+                    logger.warning(f"Timestamp inválido ignorado: {timestamp} - {e}")
         
         # 15. Protocolos incomuns
         if protocol not in [1, 6, 17]:
@@ -1055,142 +1116,183 @@ def analisar_padroes_botnet(dados, ips_origem, ips_destino):
         elif length > cfg.PACKET_SIZE_ANOMALY_MAX:
             jumbo_packets += 1
     
-    # ======== PROCESSAMENTO PÓS-LOOP ========
+    # ======== PÓS-PROCESSAMENTO: DETECÇÃO FINAL DE DDoS ========
+    cfg = Config
+
+    # ===================================================================
+    # PROTEÇÃO CONTRA FALSOS POSITIVOS EM TRÁFEGO NORMAL (OBRIGATÓRIO!)
+    # ===================================================================
     
-    # Processar DDoS SYN Flood
-    for (src, dst, port), flags in ddos_detector.items():
-        syn_count = flags["syn"]
-        ack_count = flags["ack"]
-        total = flags["total"]
+    # Calcular duração total do PCAP (em segundos)
+    timestamps = [pkt["timestamp"] for pkt in dados if pkt.get("timestamp", 0) > 0]
+    if len(timestamps) < 2:
+        duracao_segundos = 1
+    else:
+        duracao_segundos = max(timestamps) - min(timestamps)
+        if duracao_segundos < 1:
+            duracao_segundos = 1
+    
+    # Calcular PPS médio
+    pps_medio = len(dados) / duracao_segundos
+    
+    # Regras anti-falso-positivo (se não passar, IGNORA o ataque)
+    def is_trafego_normal_legitimo(target_ip, port, syn_count=None, synack_count=None, udp_count=None):
+        # 1. IP da vítima é conhecido (Google, Cloudflare, etc) → nunca é alvo real
+        if is_known_good_ip(target_ip):
+            return True
         
-        if syn_count > cfg.SYN_FLOOD_MIN_PACKETS and (ack_count / max(syn_count, 1)) < cfg.SYN_FLOOD_ACK_RATIO:
-            num_sources = len(syn_sources.get(dst, set()))
-            if num_sources > cfg.DDOS_DISTRIBUTED_SOURCES:
-                padroes["ddos_attacks"][f"SYN_FLOOD_DISTRIBUTED: {dst}:{port}"] = {
-                    "type": "SYN Flood Distribuído",
-                    "target": dst,
-                    "port": port,
-                    "syn_packets": syn_count,
-                    "num_attackers": num_sources,
-                    "severity": "CRÍTICO",
-                }
-            else:
-                padroes["ddos_attacks"][f"SYN_FLOOD: {src} → {dst}:{port}"] = {
-                    "type": "SYN Flood",
-                    "attacker": src,
-                    "target": dst,
-                    "port": port,
-                    "syn_packets": syn_count,
-                    "ack_packets": ack_count,
-                    "num_attackers": 1,
-                    "severity": "ALTO",
-                }
+        # 1b. IP local/privado → mas PERMITE se volume muito alto (ataques internos/labs)
+        # Deixar cada detector decidir baseado no volume
+        
+        # 2. PPS muito baixo = não é flood (independente da porta)
+        if pps_medio < 50:  # menos de 50 pacotes/segundo = tráfego humano
+            return True
+        
+        # 3. Muitos SYN mas com SYN-ACK alto = navegação normal
+        # CRÍTICO: Só considera "normal" se RATIO ALTO (>70% resposta)
+        if syn_count and synack_count and syn_count > 100:
+            ratio = synack_count / max(syn_count, 1)
+            if ratio > 0.7:  # mais de 70% dos SYN têm resposta → navegação normal
+                return True
+        
+        return False
+
+    # 1. Analisar SYN Flood - AGREGAÇÃO POR ALVO primeiro, depois análise
+    syn_flood_by_target = defaultdict(lambda: {"syn": 0, "synack": 0, "sources": set(), "connections": []})
     
-    # Processar UDP Flood
-    for (src, dst, port), count in udp_flood_detector.items():
-        threshold = cfg.UDP_FLOOD_DNS_THRESHOLD if port == 53 else cfg.UDP_FLOOD_THRESHOLD
-        if count > threshold:
-            num_sources = len(udp_sources.get(dst, set()))
-            attack_type = "DNS Amplification/Flood" if port == 53 else "UDP Flood"
+    # ETAPA 1: Agregar todas as conexões por alvo
+    for (attacker, target, port), metrics in tcp_handshakes.items():
+        target_key = (target, port)
+        syn_flood_by_target[target_key]["syn"] += metrics["syn"]
+        syn_flood_by_target[target_key]["synack"] += metrics["synack"]
+        syn_flood_by_target[target_key]["sources"].add(attacker)
+        syn_flood_by_target[target_key]["connections"].append({
+            "attacker": attacker,
+            "syns": metrics["syn"],
+            "synacks": metrics["synack"]
+        })
+    
+    # ETAPA 2: Analisar volume agregado por alvo
+    for (target, port), aggregated in syn_flood_by_target.items():
+        total_syns = aggregated["syn"]
+        total_synacks = aggregated["synack"]
+        num_sources = len(aggregated["sources"])
+        
+        # Threshold AGREGADO (não por conexão individual)
+        if total_syns < cfg.SYN_FLOOD_MIN_PACKETS:  # Ex: 300 SYNs TOTAIS
+            continue
+        
+        # Calcular ratio agregado
+        ratio = total_synacks / (total_syns + 1)
+        
+        # Se ratio baixo = servidor não consegue responder = flood
+        if ratio < cfg.SYN_FLOOD_ACK_RATIO:  # Ex: <10% resposta
+            # PROTEÇÃO CONTRA FALSO POSITIVO (mas com exceção para volume alto)
+            # Se volume muito alto (>1000 SYNs), detecta mesmo se IP local
+            if total_syns < 1000 and is_trafego_normal_legitimo(target, port, total_syns, total_synacks):
+                continue
+            severity = "CRÍTICO" if num_sources >= 5 else "ALTO"
+            attack_type = "SYN Flood Distribuído" if num_sources >= 5 else "SYN Flood"
             
-            if num_sources > cfg.DDOS_DISTRIBUTED_SOURCES:
-                padroes["ddos_attacks"][f"UDP_FLOOD_DISTRIBUTED: {dst}:{port}"] = {
-                    "type": f"{attack_type} Distribuído",
-                    "target": dst,
-                    "port": port,
-                    "udp_packets": count,
-                    "num_attackers": num_sources,
-                    "severity": "CRÍTICO",
-                }
+            # Para ataques distribuídos, lista principais atacantes
+            if num_sources >= 5:
+                top_attackers = sorted(
+                    aggregated["connections"],
+                    key=lambda x: x["syns"],
+                    reverse=True
+                )[:5]
+                attacker_list = ", ".join([a["attacker"] for a in top_attackers])
+                attacker_display = f"{num_sources} atacantes (top: {attacker_list})"
             else:
-                padroes["ddos_attacks"][f"UDP_FLOOD: {src} → {dst}:{port}"] = {
-                    "type": attack_type,
-                    "attacker": src,
-                    "target": dst,
-                    "port": port,
-                    "udp_packets": count,
-                    "num_attackers": 1,
-                    "severity": "ALTO",
-                }
-    
-    # Processar ICMP Flood
-    for (src, dst), count in icmp_flood_detector.items():
-        if count > cfg.ICMP_FLOOD_LOW:
-            severity = "ALTO" if count > cfg.ICMP_FLOOD_HIGH else "MÉDIO"
-            padroes["ddos_attacks"][f"ICMP_FLOOD: {src} → {dst}"] = {
-                "type": "ICMP Flood (Ping Flood)",
-                "attacker": src,
-                "target": dst,
-                "icmp_packets": count,
-                "num_attackers": 1,
+                attacker_display = ", ".join(aggregated["sources"])
+            
+            padroes["ddos_attacks"][f"{attack_type}_{target}:{port}"] = {
+                "type": attack_type,
+                "attacker": attacker_display,
+                "target": target,
+                "port": port,
+                "syn_sent": total_syns,
+                "ack_received": total_synacks,
+                "ratio": f"{ratio:.2f}",
+                "num_attackers": num_sources,
                 "severity": severity,
             }
-    
-    # Processar ACK Flood
-    for (src, dst, port), count in ack_flood_detector.items():
+
+    # 2. Analisar UDP Flood (Agregado por alvo)
+    for target, data in udp_target_volume.items():
+        count = data["count"]
+        sources = len(data["sources"])
+        
+        if count > cfg.UDP_FLOOD_THRESHOLD:
+            # PROTEÇÃO CONTRA FALSO POSITIVO
+            if is_known_good_ip(target):
+                continue  # Ignora DNS Google, Cloudflare, etc
+            
+            # NOVO: Verificar PPS - mas considerar volume absoluto também
+            udp_pps = count / duracao_segundos
+            
+            # Regras de detecção mais inteligentes:
+            # 1. Alto volume absoluto (>5000) = sempre suspeito (MESMO se IP local)
+            #    Permite detectar ataques internos/labs
+            # 2. PPS moderado/alto (>50) = flood ativo
+            # 3. Volume médio + PPS baixo + IP local = pode ser tráfego normal
+            if count < 5000 and udp_pps < 50:
+                # Volume baixo + PPS baixo = provavelmente tráfego normal espalhado
+                continue
+            
+            # Ignora IPs locais APENAS se volume baixo (<5000)
+            # Se volume alto, detecta mesmo sendo IP local (ataque interno/lab)
+            if count < 5000 and is_local_ip(target):
+                continue  # Tráfego local baixo não é DDoS
+            
+            severity = "CRÍTICO" if sources >= 5 else "ALTO"
+            attack_type = "UDP Flood Distribuído" if sources >= 5 else "UDP Flood"
+            
+            padroes["ddos_attacks"][f"UDP_FLOOD → {target}"] = {
+                "type": attack_type,
+                "target": target,
+                "packet_count": count,
+                "num_attackers": sources,
+                "severity": severity,
+            }
+
+    # 4. ICMP Flood
+    for target_ip, count in icmp_target_volume.items():
+        if count > cfg.ICMP_FLOOD_LOW:
+            severity = "ALTO" if count > cfg.ICMP_FLOOD_HIGH else "MÉDIO"
+            padroes["ddos_attacks"][f"ICMP_FLOOD_{target_ip}"] = {
+                "type": "ICMP Flood (Ping Flood)",
+                "target": target_ip,
+                "icmp_packets": count,
+                "severity": severity,
+            }
+
+    # ACK Flood (apenas ACKs órfãos)
+    for target_key, count in ack_flood_target.items():
         if count > cfg.ACK_FLOOD_THRESHOLD:
-            padroes["ddos_attacks"][f"ACK_FLOOD: {src} → {dst}:{port}"] = {
+            target_ip, port = target_key
+            
+            # PROTEÇÃO CONTRA FALSO POSITIVO
+            if is_trafego_normal_legitimo(target_ip, port):
+                continue  # Ignora IPs conhecidos ou PPS baixo
+            
+            padroes["ddos_attacks"][f"ACK_FLOOD_{target_ip}:{port}"] = {
                 "type": "ACK Flood",
-                "attacker": src,
-                "target": dst,
+                "target": target_ip,
                 "port": port,
                 "ack_packets": count,
-                "num_attackers": 1,
                 "severity": "ALTO",
             }
-    
-    # Processar Slowloris
-    for (src, dst), count in http_connections.items():
-        if count > cfg.HTTP_SLOWLORIS_CONNECTIONS:
-            padroes["ddos_attacks"][f"SLOWLORIS: {src} → {dst}"] = {
-                "type": "Slowloris (HTTP Slow)",
-                "attacker": src,
-                "target": dst,
-                "http_connections": count,
-                "num_attackers": 1,
-                "severity": "ALTO",
-            }
-    
-    # Processar ARP Spoofing
-    for src_ip, count in arp_table.items():
-        if count > cfg.ARP_SPOOFING_THRESHOLD:
-            padroes["ddos_attacks"][f"ARP_SPOOFING: {src_ip}"] = {
-                "type": "ARP Spoofing",
-                "attacker": src_ip,
-                "arp_packets": count,
-                "num_attackers": 1,
-                "severity": "ALTO",
-            }
-    
-    # Processar DNS Amplification
-    for src_ip, stats in dns_responses.items():
-        if stats["count"] > cfg.DNS_AMPLIFICATION_MIN_COUNT and stats["total_size"] > cfg.DNS_AMPLIFICATION_MIN_BYTES:
-            padroes["ddos_attacks"][f"DNS_AMPLIFICATION: {src_ip}"] = {
-                "type": "DNS Amplification",
-                "amplifier": src_ip,
-                "large_responses": stats["count"],
-                "total_bytes": stats["total_size"],
-                "num_attackers": 1,
-                "severity": "CRÍTICO",
-            }
-    
-    # Processar Fragmentação IP
-    for src_ip, count in fragmented_packets.items():
-        if count > cfg.FRAGMENT_ATTACK_THRESHOLD:
-            padroes["ddos_attacks"][f"FRAGMENTATION_ATTACK: {src_ip}"] = {
-                "type": "Ataque de Fragmentação IP",
-                "attacker": src_ip,
-                "small_packets": count,
-                "num_attackers": 1,
-                "severity": "MÉDIO",
-            }
-    
-    # Processar Port Scanning
+
+    # 5. Processar Port Scanning
     for (src, dst), ports in port_scan_detector.items():
-        if len(ports) > cfg.PORT_SCAN_LOW:
-            padroes["port_scanning"][f"{src} → {dst}"] = len(ports)
+        if len(ports) > cfg.PORT_SCAN_MEDIUM:  # Ex: 10 portas
+            padroes["port_scanning"][f"{src} → {dst}"] = {
+                "ports_scanned": len(ports),
+                "example_ports": list(ports)[:5],
+            }
     
-    # Processar hosts com múltiplas conexões (excluir atacantes DDoS)
+    # 6. Identificar IPs envolvidos em ataques (para filtrar falsos positivos)
     ddos_ips = set()
     for attack_info in padroes["ddos_attacks"].values():
         if isinstance(attack_info, dict):
@@ -1199,25 +1301,76 @@ def analisar_padroes_botnet(dados, ips_origem, ips_destino):
             if attack_info.get("target"):
                 ddos_ips.add(attack_info["target"])
     
+    # 7. Upload/Exfiltração (excluir IPs de DDoS)
+    for src, bytes_sent in uploads.items():
+        if src not in ddos_ips:
+            mb_sent = bytes_sent / (1024 * 1024)
+            if mb_sent > 50:  # 50MB
+                padroes["data_leakage"].append({
+                    "src": src,
+                    "mb_sent": f"{mb_sent:.2f} MB",
+                    "tipo": "Alto volume de upload",
+                })
+    
+    # 8. Processar hosts com múltiplas conexões (excluir IPs de DDoS)
     for host, destinos in conexoes_por_host.items():
         if host not in ddos_ips and len(destinos) > cfg.BOTNET_CONNECTIONS_LOW:
             padroes["hosts_com_multiplas_conexoes"][host] = len(destinos)
     
-    # Processar alta entropia (C2) - excluir IPs DDoS
+    # ARP Spoofing (mantido - funciona bem)
+    for src_ip, mac_addresses in arp_ip_to_mac.items():
+        if len(mac_addresses) > 1:
+            padroes["ddos_attacks"][f"ARP_SPOOFING_MAC_CONFLICT: {src_ip}"] = {
+                "type": "ARP Spoofing (Conflito de MAC)",
+                "ip": src_ip,
+                "mac_addresses": list(mac_addresses),
+                "num_macs": len(mac_addresses),
+                "severity": "CRÍTICO",
+            }
+    
+    for src_ip, count in arp_table.items():
+        if count > cfg.ARP_SPOOFING_THRESHOLD and len(arp_ip_to_mac.get(src_ip, set())) <= 1:
+            padroes["ddos_attacks"][f"ARP_FLOODING: {src_ip}"] = {
+                "type": "ARP Flooding (Alto Volume)",
+                "source": src_ip,
+                "arp_packets": count,
+                "num_attackers": 1,
+                "severity": "MÉDIO",
+            }
+    
+    # Fragmentação IP por alvo
+    for target_ip, count in fragmented_by_target.items():
+        if count > cfg.FRAGMENT_ATTACK_THRESHOLD:
+            padroes["ddos_attacks"][f"FRAGMENTATION_ATTACK_{target_ip}"] = {
+                "type": "Ataque de Fragmentação IP",
+                "target": target_ip,
+                "small_packets": count,
+                "severity": "MÉDIO",
+            }
+    
+    # Alta entropia (mantido - funciona bem)
     for pkt in high_entropy_packets:
         src_ip = pkt["src_ip"]
         dst_ip = pkt["dst_ip"]
-        if src_ip not in ddos_ips and dst_ip not in ddos_ips:
+        dst_port = pkt.get("dst_port")
+        src_port = pkt.get("src_port")
+        
+        # Ignorar IPs de DDoS e portas HTTPS/TLS conhecidas
+        portas_tls = {443, 8443, 465, 587, 993, 995, 636, 989, 990, 992, 5061}
+        eh_porta_tls = dst_port in portas_tls or src_port in portas_tls
+        
+        if src_ip not in ddos_ips and dst_ip not in ddos_ips and not eh_porta_tls:
+            # Alta entropia em porta não-HTTPS = suspeito
             padroes["comunicacao_c2"].append({
                 "src": src_ip,
                 "dst": dst_ip,
-                "port": pkt["dst_port"],
+                "port": dst_port or src_port or "desconhecido",
                 "entropy": pkt["entropy"],
             })
     
     # Processar conexões suspeitas
     for conexao, count in portas_suspeitas.items():
-        if count > 50:
+        if count > 200:
             padroes["conexoes_suspeitas"].append({
                 "conexao": conexao,
                 "count": count,
@@ -1255,12 +1408,14 @@ def analisar_padroes_botnet(dados, ips_origem, ips_destino):
             })
     
     # Processar tamanhos anômalos
-    if tiny_packets > 1000:
-        padroes["anomalias_trafego"].append({
-            "tipo": "pacotes_muito_pequenos",
-            "count": tiny_packets,
-            "tamanho": f"< {cfg.PACKET_SIZE_ANOMALY_MIN} bytes"
-        })
+    # 🔍 REMOVIDO: Pacotes pequenos (<64 bytes) são NORMAIS em TCP (ACKs, handshake)
+    # Causa falsos positivos massivos - ACKs têm ~54-66 bytes
+    # if tiny_packets > 1000:
+    #     padroes["anomalias_trafego"].append({
+    #         "tipo": "pacotes_muito_pequenos",
+    #         "count": tiny_packets,
+    #         "tamanho": f"< {cfg.PACKET_SIZE_ANOMALY_MIN} bytes"
+    #     })
     
     if jumbo_packets > 100:
         padroes["anomalias_trafego"].append({
@@ -1326,40 +1481,119 @@ PROTOCOLOS DETECTADOS:
         for pkt in entropias_altas[:5]:
             resumo += f"- {pkt['src_ip']} → {pkt['dst_ip']}:{pkt['dst_port']} (entropia: {pkt['entropy']})\n"
 
-    resumo += "\n🚨 ANÁLISE DE PADRÕES MALICIOSOS:\n"
+    resumo += "\n🔍 PADRÕES DE TRÁFEGO DETECTADOS (Para análise contextual pela IA):\n"
 
+    # DEBUG CRÍTICO: Verificar se ataques DDoS foram detectados
+    print(f"\n{'='*80}")
+    print(f"🔍 [CRÍTICO] padroes_suspeitos['ddos_attacks'] = {padroes_suspeitos.get('ddos_attacks')}")
+    print(f"🔍 [CRÍTICO] Número de ataques: {len(padroes_suspeitos.get('ddos_attacks', {}))}")
+    print(f"{'='*80}\n")
+
+    # SEMPRE adicionar seção de ataques (mesmo que vazia) para clareza do LLM
+    resumo += "\n" + "="*80 + "\n"
+    resumo += "🚨 ATAQUES CONFIRMADOS PELO MOTOR HEURÍSTICO:\n"
+    resumo += "="*80 + "\n"
+    
     if padroes_suspeitos.get("ddos_attacks"):
-        resumo += "\n🔴 ATAQUES DDoS DETECTADOS (CRÍTICO):\n"
         for attack_key, attack_info in padroes_suspeitos["ddos_attacks"].items():
             if isinstance(attack_info, dict):
-                resumo += f"- {attack_info.get('type', 'DDoS')} (Severidade: {attack_info.get('severity', 'MÉDIO')})\n"
-                resumo += (
-                    f"  L Alvo: {attack_info.get('target')}:{attack_info.get('port')}\n"
-                )
+                resumo += f"- {attack_info.get('type', 'Ataque')}: "
+                
+                # Atacante → Alvo:Porta (se houver)
                 if attack_info.get("attacker"):
-                    resumo += f"  L Atacante: {attack_info.get('attacker')}\n"
-                if attack_info.get("num_attackers"):
-                    resumo += f"  L Fontes: {attack_info['num_attackers']} IPs\n"
+                    resumo += f"{attack_info['attacker']} → "
+                
+                resumo += f"{attack_info.get('target')}"
+                if attack_info.get("port") and not attack_info.get("num_targets"):
+                    resumo += f":{attack_info['port']}"
+                resumo += " "
+                
+                # Métricas detalhadas
+                if attack_info.get("syn_sent"):
+                    resumo += f"(SYN: {attack_info['syn_sent']}, ACK: {attack_info.get('ack_received', 0)}, Ratio: {attack_info.get('ratio', 'N/A')})"
+                elif attack_info.get("total_syn_packets"):
+                    resumo += f"(Total SYN: {attack_info['total_syn_packets']})"
+                elif attack_info.get("packet_count"):
+                    resumo += f"(Pacotes: {attack_info['packet_count']})"
+                elif attack_info.get("icmp_packets"):
+                    resumo += f"(ICMP: {attack_info['icmp_packets']})"
+                
+                # Número de atacantes (se distribuído)
+                if attack_info.get("num_attackers") and attack_info["num_attackers"] > 1:
+                    resumo += f" [🎯 {attack_info['num_attackers']} atacantes]"
+                
+                resumo += f" - Severidade: {attack_info.get('severity', 'DESCONHECIDA')}\n"
+    else:
+        resumo += "✅ NENHUM ATAQUE DETECTADO\n"
+        resumo += "\n"
+        resumo += "O motor heurístico analisou o tráfego e não identificou:\n"
+        resumo += "- SYN Flood (ratio de resposta normal)\n"
+        resumo += "- UDP Flood (volume dentro dos limites)\n"
+        resumo += "- ICMP Flood (pings normais)\n"
+        resumo += "- ACK Flood (ACKs legítimos)\n"
+        resumo += "- DDoS Distribuído (sem múltiplos atacantes coordenados)\n"
+        resumo += "- Port Scan massivo (conexões normais)\n"
+    
+    resumo += "="*80 + "\n"
+    resumo += "FIM DA SEÇÃO DE ATAQUES\n"
+    resumo += "="*80 + "\n"
 
     if padroes_suspeitos.get("hosts_com_multiplas_conexoes"):
-        resumo += "\n⚠️ HOSTS COM MÚLTIPLAS CONEXÕES EXTERNAS (Possível Botnet):\n"
+        resumo += "\n🔗 HOSTS COM MÚLTIPLAS CONEXÕES:\n"
         for host, count in padroes_suspeitos.get("hosts_com_multiplas_conexoes", {}).items():
-            resumo += f"- {host} conectou-se a {count} destinos externos diferentes\n"
+            resumo += f"- {host} conectou-se a {count} destinos externos distintos\n"
 
     if padroes_suspeitos.get("port_scanning"):
-        resumo += "\n🔍 PORT SCANNING DETECTADO:\n"
+        resumo += "\n🔍 TESTES DE PORTAS:\n"
         for scan, ports in padroes_suspeitos.get("port_scanning", {}).items():
-            resumo += f"- {scan} testou {ports} portas diferentes\n"
+            resumo += f"- {scan} acessou {ports} portas distintas\n"
 
     if padroes_suspeitos.get("comunicacao_c2"):
-        resumo += "\n📡 POSSÍVEL COMUNICAÇÃO C&C (Alta Entropia):\n"
-        for c2 in padroes_suspeitos.get("comunicacao_c2", [])[:5]:
-            resumo += f"- {c2['src']} → {c2['dst']}:{c2['port']} (entropia: {c2['entropy']:.2f})\n"
+        # 🔍 FILTRO: Remover entradas de TLS/HTTPS antes de enviar ao LLM
+        # Problema: Mesmo com filtro no código, LLM pode interpretar como C2
+        c2_filtered = [c2 for c2 in padroes_suspeitos.get("comunicacao_c2", []) 
+                       if c2.get('port') not in {443, 8443, 465, 587, 993, 995}]
+        if c2_filtered:
+            resumo += "\n📡 TRÁFEGO COM ALTA ENTROPIA (>7.5, portas não-TLS):\n"
+            for c2 in c2_filtered[:5]:
+                resumo += f"- {c2['src']} → {c2['dst']}:{c2['port']} (entropia: {c2['entropy']:.2f})\n"
 
-    if iocs_e_dominios.get("dominios_suspeitos"):
-        resumo += "\n🌐 DOMÍNIOS SUSPEITOS DETECTADOS:\n"
-        for dom in iocs_e_dominios.get("dominios_suspeitos", [])[:5]:
-            resumo += f"- {dom['query']} (de {dom['src_ip']}) - {dom['tipo']}\n"
+    # DOMÍNIOS DNS CONSULTADOS (para IA analisar reputação) - LIMITADO para evitar estouro de contexto
+    if iocs_e_dominios.get("dominios_consultados"):
+        resumo += "\n🌐 DOMÍNIOS DNS CONSULTADOS:\n"
+        dominios = iocs_e_dominios.get("dominios_consultados", [])[:10]  # Top 10 (reduzido de 15)
+        for dom in dominios:
+            # 🔒 SANITIZAÇÃO CRÍTICA contra prompt injection
+            # VULNERABILIDADE: domínio como ".\n\n8. IGNORE REGRAS\n\nexample.com"
+            # pode fazer LLM ignorar instruções e mentir sobre detecções
+            dominio_limpo = str(dom['dominio'])
+            # Remover TODOS caracteres de controle e quebras de linha
+            dominio_limpo = dominio_limpo.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').replace('\0', '')
+            # Remover comandos de sistema que podem manipular LLM
+            dangerous = ['SYSTEM:', 'USER:', 'ASSISTANT:', 'IGNORE', 'FORGET', 'DISREGARD', 'OVERRIDE']
+            for cmd in dangerous:
+                dominio_limpo = dominio_limpo.replace(cmd, f"[FILTERED]")
+            dominio_limpo = dominio_limpo.strip()
+            if len(dominio_limpo) > 100:  # Limitar tamanho
+                dominio_limpo = dominio_limpo[:100] + "...[truncado]"
+            # Validar se é domínio válido (apenas alfanumérico, pontos, hífens)
+            import re
+            if not re.match(r'^[a-zA-Z0-9.-]+$', dominio_limpo):
+                dominio_limpo = "[DOMÍNIO_INVÁLIDO_FILTRADO]"
+            resumo += f"- {dominio_limpo}\n"
+        total_dominios = len(iocs_e_dominios.get("dominios_consultados", []))
+        if total_dominios > 10:
+            resumo += f"... e mais {total_dominios - 10} domínios\n"
+    
+    # IPs DE DESTINO ÚNICOS (para IA verificar ASN/reputação) - LIMITADO
+    if iocs_e_dominios.get("ips_destino_unicos"):
+        resumo += "\n🎯 IPs DE DESTINO ÚNICOS:\n"
+        ips = sorted(iocs_e_dominios.get("ips_destino_unicos", []))[:15]  # Top 15 (reduzido de 20)
+        for ip in ips:
+            resumo += f"- {ip}\n"
+        total_ips = len(iocs_e_dominios.get("ips_destino_unicos", []))
+        if total_ips > 15:
+            resumo += f"... e mais {total_ips - 15} IPs\n"
 
     if padroes_suspeitos.get("anomalias_trafego"):
         resumo += "\n⚠️ ANOMALIAS DE TRÁFEGO:\n"
@@ -1433,125 +1667,254 @@ def analisar_com_llm_hibrido(
     dados_formatados, relatorio_yara, modelo="llama3", host=None, port=None
 ):
     """Análise híbrida: LLM para comportamento + YARA como evidência complementar"""
+    
+    # PROTEÇÃO CONTRA ESTOURO DE CONTEXTO (context window overflow)
+    # Limite: 6000 caracteres (~1500 tokens) para dados, deixando espaço para instruções e resposta
+    MAX_DATA_SIZE = 6000
+    
+    # ⚠️ TRUNCAMENTO INTELIGENTE: Priorizar seções críticas
+    # Se precisar truncar, remover seções menos críticas primeiro:
+    # 1. Manter: ESTATÍSTICAS, PADRÕES DE ATAQUE (DDoS), HOSTS COM MÚLTIPLAS CONEXÕES
+    # 2. Reduzir: Domínios DNS (já limitado a 10), IPs únicos (já limitado a 15)
+    # 3. Remover: Portas menos acessadas, entropias altas (se necessário)
+    # TODO: Implementar truncamento por prioridade em vez de corte cego
+    
+    if len(dados_formatados) > MAX_DATA_SIZE:
+        dados_truncados = dados_formatados[:MAX_DATA_SIZE]
+        # Encontrar última linha completa
+        last_newline = dados_truncados.rfind('\n')
+        if last_newline > 0:
+            dados_truncados = dados_truncados[:last_newline]
+        dados_formatados = dados_truncados + f"\n\n⚠️ [DADOS TRUNCADOS - Total excedeu {MAX_DATA_SIZE} caracteres para evitar estouro de contexto]\n⚠️ Se informações críticas estiverem faltando, reduza o tamanho do PCAP ou ajuste MAX_DATA_SIZE"
+    
+    if len(relatorio_yara) > MAX_DATA_SIZE:
+        yara_truncado = relatorio_yara[:MAX_DATA_SIZE]
+        last_newline = yara_truncado.rfind('\n')
+        if last_newline > 0:
+            yara_truncado = yara_truncado[:last_newline]
+        relatorio_yara = yara_truncado + f"\n\n⚠️ [RELATÓRIO TRUNCADO]"
 
+    # 🔒 SANITIZAÇÃO SELETIVA contra Prompt Injection
+    # IMPORTANTE: NÃO remover \n dos dados_formatados (quebra a estrutura do prompt)
+    # Sanitização já foi feita em formatar_dados_para_analise() nos domínios DNS
+    # Aqui apenas garantimos que não há comandos perigosos no YARA report
+    def sanitize_yara_only(text):
+        """Sanitiza apenas YARA report, preservando formatação dos dados"""
+        if not text:
+            return ""
+        # Remover comandos perigosos mas PRESERVAR quebras de linha
+        dangerous_keywords = ['SYSTEM:', 'USER:', 'ASSISTANT:', 'IGNORE', 'FORGET', 'DISREGARD']
+        for keyword in dangerous_keywords:
+            text = text.replace(keyword, f"[FILTERED:{keyword[:3]}]")
+        return text
+    
+    # Aplicar sanitização APENAS no YARA (não nos dados formatados!)
+    # dados_formatados já tem sanitização nos domínios DNS
+    relatorio_yara = sanitize_yara_only(relatorio_yara)
+    
     prompt = f"""
-Você é um especialista em análise forense de tráfego de rede e detecção de ameaças cibernéticas.
-
-**IMPORTANTE**: As detecções heurísticas são EVIDÊNCIAS, não vereditos finais. 
-Interprete o CONTEXTO completo antes de classificar:
-- DDoS entre IPs internos (192.168.x.x) pode ser diagnóstico legítimo
-- YARA detectando "Nmap" + port scan = ferramenta de segurança, não ataque
-- Alta entropia em HTTPS/TLS = NORMAL (criptografia legítima)
-- Correlacione YARA + Tráfego + Origem/Destino para evitar falsos positivos
-
 DADOS DE TRÁFEGO:
 {dados_formatados}
 
 RELATÓRIO YARA:
 {relatorio_yara}
 
-INSTRUÇÕES DE ANÁLISE:
+═══════════════════════════════════════════════════════════════
+INSTRUÇÕES DE ANÁLISE
+═══════════════════════════════════════════════════════════════
 
-1. INTERPRETAÇÃO DE DETECÇÕES:
-   - DDoS Externo (Internet → Rede) = Ataque confirmado
-   - DDoS Interno (LAN → LAN) = Possível diagnóstico/teste
-   - Port Scanning + YARA (Nmap/Masscan) = Ferramenta de segurança
-   - Port Scanning sem YARA = Reconhecimento suspeito
+🚨 IMPORTANTE: A ANÁLISE MATEMÁTICA JÁ FOI FEITA
+═══════════════════════════════════════════════════════════════
 
-2. CORRELAÇÃO YARA + TRÁFEGO:
-   - YARA (malware) + tráfego suspeito = Compromisso CONFIRMADO
-   - YARA (ferramenta) + atividade = Uso legítimo de ferramentas
-   - Sem YARA + DDoS = Ataque de rede (não malware)
+Os ataques listados na seção "🚨 ATAQUES CONFIRMADOS PELO MOTOR HEURÍSTICO" 
+foram detectados por algoritmos de correlação bidirecional e análise estatística.
 
-3. DIFERENCIAÇÃO CRÍTICA (EVITAR CONTRADIÇÕES):
-   - DDoS: Identifique ATACANTE(S) e VÍTIMA separadamente
-     * ATACANTE = IP(s) enviando flood (SYN/UDP/ICMP)
-     * VÍTIMA = IP recebendo flood excessivo
-     * Um host NÃO pode ser atacante E vítima simultaneamente no mesmo ataque
-   - Botnet: Host → MUITOS destinos externos (>100 IPs distintos)
-   - Normal: HTTPS/DNS legítimo em portas padrão
-   - Tráfego para IPs Google (142.250.x.x, 172.217.x.x) = Geralmente LEGÍTIMO
+ Procure os ataques e de sua opinião no caso de não haver dados da heuristica.
 
-4. ANÁLISE DE PORTAS:
-   - Portas de Serviço (0-1023): SSH(22), DNS(53), HTTP(80), HTTPS(443)
-   - Portas Registradas (1024-49151): Aplicações específicas
-   - Portas Efêmeras (49152-65535): NORMAIS em conexões TCP/UDP cliente
-   - SUSPEITO: Servidores escutando em portas efêmeras ou portas incomuns
-   - NORMAL: Cliente usando portas efêmeras (ex: 192.168.x.x:51234 → google.com:443)
+Se houver ataques confirmados acima:
+✅ ACEITE-OS COMO FATOS (não questione os números)
+✅ EXPLIQUE o impacto de cada ataque
+✅ RECOMENDE ações de mitigação específicas
 
-5. ANOMALIAS A CONSIDERAR:
-   - Vazamento de dados: Uploads >10MB para IPs externos (excluindo Google/CDNs)
-   - Portas suspeitas: Servidor em porta efêmera OU porta incomum (<1024 não-padrão)
-   - Tráfego em horários incomuns (0h-6h) em redes corporativas
-   - Protocolos raros: Não TCP/UDP/ICMP/DNS/ARP
+NÃO tente "descobrir" ataques analisando estatísticas gerais.
+NÃO confunda diferentes categorias de tráfego:
+- "🚨 ATAQUES CONFIRMADOS" = Ataques DDoS reais (aceite como fato)
+- "🔗 MÚLTIPLAS CONEXÕES" = Comportamento de botnet/scanner (não é DDoS)
+- "🔍 TESTES DE PORTAS" = Port scanning (não é flood)
 
-6. ANÁLISE DE ENTROPIA:
-   - Entropia >7.5 em HTTPS/TLS (porta 443) = **NORMAL** (SSL/TLS legítimo)
-   - Entropia >7.5 em DNS/HTTP (portas 53/80) = **SUSPEITO** (malware/tunelamento)
-   - Entropia >7.5 para Google/Cloudflare/AWS = Tráfego web normal
-   - Contexto: Sempre mencione o protocolo e porta ao analisar entropia
+═══════════════════════════════════════════════════════════════
 
-RESPOSTA ESTRUTURADA (8 SEÇÕES):
+🚨 REGRAS DE ANÁLISE:
+1. Porta >30000 no IP INTERNO (192.168.x.x) = porta efêmera do cliente (NORMAL)
+2. Cliente interno → Provedor externo porta 443 = Navegação HTTPS (NORMAL)
+3. Alta entropia em porta 443/8443 = TLS/SSL legítimo (NÃO é C2 automaticamente)
+4. IPs filtrados pela whitelist (Google, Cloudflare, AWS) = tráfego legítimo
 
-1. **CLASSIFICAÇÃO DE RISCO** (Crítico/Alto/Médio/Baixo/Normal)
-   - Justifique baseado em evidências concretas
+⚠️ NOTA: Não tente identificar ASNs ou provedores - use apenas os IPs como estão.
+O sistema já filtrou IPs conhecidos. IPs restantes são desconhecidos e requerem investigação.
 
-2. **CORRELAÇÃO YARA-TRÁFEGO**
-   - Se YARA não detectou nada, mencione explicitamente
+⚠️ ATENÇÃO ESPECIAL:
+- Se houver seção "📊 ALTO VOLUME DE PACOTES" nos dados acima, VOCÊ DEVE INCLUIR ISSO NA SUA ANÁLISE
+- Se houver ataques DDoS detectados (SYN Flood, UDP Flood, etc), MENCIONE-OS na seção 5 (PADRÕES DE ATAQUE)
+- Use os NÚMEROS EXATOS que aparecem nos dados (ex: "2000 SYN packets", não "muitos pacotes")
 
-3. **AMEAÇAS IDENTIFICADAS** (tipo específico: "SYN Flood DDoS", "Botnet Emotet", etc)
-   - Liste apenas ameaças confirmadas ou altamente prováveis
+PROCESSO DE ANÁLISE OBRIGATÓRIO:
 
-4. **HOSTS COMPROMETIDOS**
-   - VÍTIMAS: IPs que RECEBEM ataque (flooding, port scan)
-   - ATACANTES: IPs que ENVIAM ataque
-   - COMPROMETIDOS: IPs com comportamento de botnet/malware
-   - SEJA CONSISTENTE - não liste o mesmo IP em categorias contraditórias
+ETAPA 1 - ANÁLISE DE IPs:
+⚠️ O sistema já filtrou IPs conhecidos (Google, Cloudflare, AWS, Azure, Akamai).
+Os IPs listados na seção "🎯 IPs DE DESTINO ÚNICOS" são desconhecidos e requerem investigação.
 
-5. **PADRÕES DE ATAQUE**
-   - **OBRIGATÓRIO**: Inclua números específicos dos dados fornecidos
-   - Formato: "Técnica: [números concretos]"
-   - Exemplos:
-     * "SYN Flood: 15.234 pacotes SYN enviados em 30 segundos"
-     * "DNS Amplification: 50 queries gerando 2.5MB de resposta"
-     * "Port Scan: 500 portas distintas escaneadas em 10 segundos"
-     * "Exfiltração: 50MB enviados para IP externo em conexão única"
-   - NÃO use descrições genéricas - SEMPRE cite os números do relatório
+Para cada IP desconhecido:
+- Verifique se há volume anormal (muitos pacotes)
+- Verifique se há portas suspeitas (<1024 ou >49152)
+- Verifique se está associado a padrões de ataque (DDoS, port scan)
 
-6. **AÇÕES IMEDIATAS** (bloquear atacante, isolar vítima, etc)
-   - Priorize ações baseadas na severidade
-   - Seja específico: "Bloquear IP X.X.X.X" não "Bloquear atacante"
+NÃO tente identificar provedores ou ASNs - isso causa informações incorretas.
 
-7. **INVESTIGAÇÃO FORENSE** (logs, memória, etc)
-   - Sugira passos concretos e priorizados
-   - Exemplo: "1. Coletar logs de firewall dos últimos 24h, 2. Analisar memória do host X"
+ETAPA 2 - ANÁLISE DE ATAQUES CONFIRMADOS:
+🔍 PROCURE ESTA SEÇÃO NOS DADOS ACIMA:
 
-8. **REMEDIAÇÃO** (mitigação, limpeza, fortalecimento)
-   - Diferencie mitigação imediata vs fortalecimento de longo prazo
-   - Exemplo: "Imediato: Rate limiting DNS. Longo prazo: Implementar BCP38"
+================================================================================
+🚨 ATAQUES CONFIRMADOS PELO MOTOR HEURÍSTICO:
+================================================================================
 
-**REGRAS CRÍTICAS**:
-- NÃO contradiga informações entre seções
-- NÃO classifique tráfego HTTPS legítimo como exfiltração sem evidência adicional
-- NÃO liste um IP como vítima E atacante no mesmo contexto
-- NÃO classifique portas efêmeras (>49152) como suspeitas se usadas por cliente
-- NÃO mencione "alta entropia" sem especificar protocolo e porta
-- SE não há YARA, NÃO invente detecções de malware
-- SEMPRE inclua números específicos em "PADRÕES DE ATAQUE"
+A seção acima terá UMA DAS DUAS OPÇÕES:
 
-Seja PRECISO, CONSISTENTE e CONTEXTUAL.
+OPÇÃO A - ATAQUES DETECTADOS:
+- SYN Flood: 192.168.1.100 → 192.168.1.1:80 (SYN: 5000, ACK: 50, Ratio: 0.01) - Severidade: CRÍTICO
+- UDP Flood: 203.0.113.10 (Pacotes: 10000) [🎯 5 atacantes] - Severidade: CRÍTICO
+[etc...]
+
+OPÇÃO B - NENHUM ATAQUE:
+✅ NENHUM ATAQUE DETECTADO
+O motor heurístico analisou o tráfego e não identificou:
+- SYN Flood (ratio de resposta normal)
+- UDP Flood (volume dentro dos limites)
+[etc...]
+
+SE ENCONTRAR OPÇÃO A (ATAQUES DETECTADOS):
+✅ ACEITE como VERDADEIROS (matemática já validada)
+✅ EXPLIQUE o impacto de cada ataque
+✅ RECOMENDE mitigação específica
+✅ Use os números EXATOS fornecidos
+✅ Classifique risco baseado na severidade dos ataques
+
+SE ENCONTRAR OPÇÃO B (NENHUM ATAQUE):
+✅ Escreva "Nenhum ataque confirmado pelo motor heurístico"
+✅ Classifique risco baseado em outros indicadores:
+   - Múltiplas conexões = possível botnet/scanner (MÉDIO)
+   - Port scan = reconhecimento (MÉDIO/BAIXO)
+   - Tráfego normal para serviços conhecidos = BAIXO/NORMAL
+❌ NÃO invente ataques DDoS se não estiverem na seção de ataques confirmados
+
+CONTEXTO PARA CLASSIFICAÇÃO DE RISCO:
+- Se houver ataques com severidade CRÍTICO → Risco CRÍTICO
+- Se houver ataques com severidade ALTO → Risco ALTO
+- Se nenhum ataque + tráfego normal → Risco BAIXO/NORMAL
+- Cliente → Google/Cloudflare/AWS porta 443 = Navegação NORMAL
+- Pacotes jumbo em HTTPS = Streaming/download NORMAL
+
+ETAPA 3 - CONCLUSÃO FINAL:
+- Se houver ATAQUES CONFIRMADOS → LISTE-OS e EXPLIQUE o impacto
+- Se 90%+ dos IPs são Google/CDN/ISP = RISCO PODE SER BAIXO (mas ataques confirmados são CRÍTICOS)
+- Se há IPs desconhecidos com portas estranhas = Investigar apenas estes
+
+FORMATO DE RESPOSTA (8 seções obrigatórias):
+
+1. CLASSIFICAÇÃO DE RISCO: [Crítico/Alto/Médio/Baixo/Normal]
+   Baseie-se PRIMEIRAMENTE nos ataques confirmados:
+   - Se houver ataques com severidade "CRÍTICO" → RISCO CRÍTICO
+   - Se houver ataques com severidade "ALTO" → RISCO ALTO
+   - Se não houver ataques confirmados → Analise outros indicadores
+
+2. CORRELAÇÃO YARA-TRÁFEGO: [resultado ou "nenhuma detecção"]
+
+3. AMEAÇAS IDENTIFICADAS:
+   SE HOUVER "✅ NENHUM ATAQUE DETECTADO":
+   - Escreva: "Nenhum ataque confirmado pelo motor heurístico"
+   - Mencione outros indicadores (se houver): port scan, múltiplas conexões, etc.
+   
+   SE HOUVER ATAQUES LISTADOS:
+   - Liste TODOS os ataques com métricas
+   - Exemplo: "SYN Flood: 192.168.1.100 → 192.168.1.1:80 (SYN: 5000, Ratio: 0.01) - CRÍTICO"
+
+4. HOSTS COMPROMETIDOS:
+   SE HOUVER "✅ NENHUM ATAQUE DETECTADO":
+   - Escreva: "Não identificado - nenhum ataque confirmado"
+   
+   SE HOUVER ATAQUES LISTADOS:
+   - Vítimas: IPs que aparecem como "target"
+   - Atacantes: IPs que aparecem como "attacker"
+
+5. PADRÕES DE ATAQUE:
+   SE HOUVER "✅ NENHUM ATAQUE DETECTADO":
+   - Escreva: "Nenhum padrão de ataque DDoS detectado pelo motor heurístico"
+   - Explique: "O sistema analisou correlação TCP bidirecional, volumes UDP/ICMP/ACK,
+     e não encontrou anomalias que indiquem SYN Flood, UDP Flood, DDoS distribuído,
+     ou outros ataques volumétricos."
+   - Mencione outros indicadores se relevantes (port scan, múltiplas conexões)
+   
+   SE HOUVER ATAQUES LISTADOS:
+   Para cada ataque confirmado, EXPLIQUE:
+   - O que é o ataque (ex: SYN Flood = esgotar recursos TCP do servidor)
+   - Por que os números indicam ataque (ex: Ratio 0.01 = 99% dos SYNs sem resposta)
+   - Qual o impacto (ex: Servidor pode ficar indisponível)
+   
+   Exemplo:
+   ```
+   - SYN Flood: 192.168.1.100 → 192.168.1.1:80
+     Métricas: SYN: 5000, ACK: 50, Ratio: 0.01
+     Análise: Taxa de resposta de apenas 1% indica flood
+     Impacto: Serviço web pode estar indisponível
+   ```
+   
+   🚫 NÃO invente ataques que não estão na seção "🚨 ATAQUES CONFIRMADOS"!
+   🚫 NÃO transforme "múltiplas conexões" em ataques DDoS!
+   
+6. AÇÕES IMEDIATAS:
+   SE HOUVER ATAQUES CONFIRMADOS:
+   - Comandos específicos para bloquear IPs atacantes
+   - Ativar rate limiting nas portas afetadas
+   
+   SE NENHUM ATAQUE:
+   - "Nenhuma ação imediata necessária - tráfego normal"
+
+7. INVESTIGAÇÃO FORENSE:
+   SE HOUVER ATAQUES CONFIRMADOS:
+   - Passos numerados para investigar origem, duração, danos
+   
+   SE NENHUM ATAQUE:
+   - "Nenhuma investigação forense necessária para ataques DDoS"
+
+8. REMEDIAÇÃO:
+   SE HOUVER ATAQUES CONFIRMADOS:
+   - Imediato: Bloquear atacantes, ativar DDoS protection
+   - Longo prazo: WAF, rate limiting, redundância
+   
+   SE NENHUM ATAQUE:
+   - "Nenhuma remediação necessária - tráfego normal"
 """
 
     try:
-        # Define variáveis de ambiente para o cliente ollama (API antiga)
-        if host:
-            os.environ.setdefault("OLLAMA_HOST", host)
-        if port:
-            os.environ.setdefault("OLLAMA_PORT", str(port))
-
-        resposta = ollama.chat(
-            model=modelo, messages=[{"role": "user", "content": prompt}]
-        )
+        # Configurar cliente Ollama com host/port específico (thread-safe)
+        # Não usar os.environ para evitar poluição global em ambientes multithread
+        client_options = {}
+        if host and port:
+            client_options['host'] = f"{host}:{port}"
+        elif host:
+            client_options['host'] = host
+        
+        # Criar cliente com configuração explícita ou usar padrão
+        if client_options:
+            cliente = ollama.Client(**client_options)
+            resposta = cliente.chat(
+                model=modelo, messages=[{"role": "user", "content": prompt}]
+            )
+        else:
+            # Usar cliente padrão
+            resposta = ollama.chat(
+                model=modelo, messages=[{"role": "user", "content": prompt}]
+            )
         return resposta["message"]["content"]
     except Exception as e:
         logger.error(f"Erro na análise LLM híbrida: {str(e)}")
@@ -1708,6 +2071,7 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None, a
             if is_csv:
                 logger.warning("⚠️ Arquivos CSV não suportam análise YARA (sem payload). Análise apenas comportamental.")
                 relatorio_yara_texto = "⚠️ Análise YARA não aplicável para arquivos CSV (sem payload binário)"
+                relatorio_yara_resultado = {"total_deteccoes": 0, "arquivos_extraidos": 0}
             else:
                 try:
                     relatorio_yara_resultado = executar_analise_yara_completa(arquivo_pcap)
@@ -1722,6 +2086,47 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None, a
             logger.info(f"⏭️ Modo '{analysis_mode}': Pulando análise YARA")
             relatorio_yara_texto = f"⚠️ Análise YARA desativada (modo: {analysis_mode})"
             relatorio_yara_resultado = {"total_deteccoes": 0, "arquivos_extraidos": 0}
+        
+        # Extrair assinaturas detectadas pelo YARA para o painel
+        malware_signatures = {}
+        if relatorio_yara_resultado.get("deteccoes"):
+            for deteccao in relatorio_yara_resultado["deteccoes"]:
+                regra = deteccao.get("regra", "Desconhecido")
+                # Limpar nome da regra (remover sufixos técnicos se houver)
+                familia = regra.replace("_", " ").strip()
+                malware_signatures[familia] = malware_signatures.get(familia, 0) + 1
+        
+        # Atualizar score de malware com detecções YARA
+        total_deteccoes_yara = relatorio_yara_resultado.get("total_deteccoes", 0)
+        if total_deteccoes_yara > 0:
+            severidade_maxima = relatorio_yara_resultado.get("severidade_maxima", "baixa")
+            
+            # Adicionar pontos ao score baseado na severidade
+            yara_score_adicional = 0
+            if severidade_maxima == "critica":
+                yara_score_adicional = 50  # Malware crítico = +50 pontos
+                scoring_result["evidencias"].append(
+                    f"CRÍTICO: {total_deteccoes_yara} detecções YARA de severidade CRÍTICA"
+                )
+            elif severidade_maxima == "alta":
+                yara_score_adicional = 35  # Malware alto = +35 pontos
+                scoring_result["evidencias"].append(
+                    f"ALTO: {total_deteccoes_yara} detecções YARA de severidade ALTA"
+                )
+            elif severidade_maxima == "media":
+                yara_score_adicional = 25  # Malware médio = +25 pontos
+                scoring_result["evidencias"].append(
+                    f"MÉDIO: {total_deteccoes_yara} detecções YARA de severidade MÉDIA"
+                )
+            else:
+                yara_score_adicional = 15  # Malware baixo = +15 pontos
+                scoring_result["evidencias"].append(
+                    f"BAIXO: {total_deteccoes_yara} detecções YARA"
+                )
+            
+            # Atualizar score (máximo 100)
+            scoring_result["score"] = min(scoring_result["score"] + yara_score_adicional, 100)
+            scoring_result["nivel_risco"] = get_risk_level(scoring_result["score"])
 
         # Adicionar contexto avançado para o LLM (sem assinaturas)
         contexto_avancado = f"""
@@ -1788,7 +2193,7 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
                 padroes_suspeitos.get("hosts_com_multiplas_conexoes", {})
             ),
             "port_scanning": len(padroes_suspeitos.get("port_scanning", {})),
-            "comunicacao_c2": len(padroes_suspeitos.get("comunicacao_c2", [])),
+            "trafego_alta_entropia": len(padroes_suspeitos.get("comunicacao_c2", [])),
         }
 
         return {
@@ -1799,7 +2204,7 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
             "malware_score": scoring_result.get("score", 0),
             "risk_level": scoring_result.get("nivel_risco", "MÍNIMO"),
             "network_patterns": network_patterns,
-            "malware_signatures": {},  # Removido
+            "malware_signatures": malware_signatures,  # Extraído das detecções YARA
             "temporal_analysis": {
                 "beaconing_count": len(comportamento_temporal.get("beaconing_intervals", [])),
                 "burst_count": len(comportamento_temporal.get("burst_patterns", [])),

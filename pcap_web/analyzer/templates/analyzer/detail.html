@@ -225,10 +225,29 @@
                                 <div class="mb-1">
                                     <small class="text-capitalize">{{ padrao|title }}:</small>
                                     <span class="badge 
-                                        {% if count > 10 %}bg-danger
-                                        {% elif count > 5 %}bg-warning
-                                        {% elif count > 0 %}bg-info
-                                        {% else %}bg-success
+                                        {% if padrao == "trafego_alta_entropia" %}
+                                            {% comment %}Alta entropia é normal em HTTPS - threshold maior{% endcomment %}
+                                            {% if count > 8000 %}bg-warning
+                                            {% else %}bg-secondary
+                                            {% endif %}
+                                        {% elif padrao == "ddos_attacks" %}
+                                            {% if count > 5 %}bg-danger
+                                            {% elif count > 2 %}bg-warning
+                                            {% elif count > 0 %}bg-info
+                                            {% else %}bg-success
+                                            {% endif %}
+                                        {% elif padrao == "port_scanning" %}
+                                            {% if count > 10 %}bg-danger
+                                            {% elif count > 5 %}bg-warning
+                                            {% elif count > 0 %}bg-info
+                                            {% else %}bg-success
+                                            {% endif %}
+                                        {% else %}
+                                            {% comment %}Padrões normais (conexoes_multiplas){% endcomment %}
+                                            {% if count > 50 %}bg-warning
+                                            {% elif count > 20 %}bg-info
+                                            {% else %}bg-secondary
+                                            {% endif %}
                                         {% endif %}
                                     ">{{ count }}</span>
                                 </div>
