@@ -21,7 +21,7 @@ Foram criados três arquivos distintos, descritos a seguir.
 
 ### 4.1 Teste 1 – Ataques DoS em Ambiente Controlado
 
-O primeiro teste consiste na fusão do tráfego benigno com três tipos de ataques DoS gerados manualmente em um ambiente controlado, utilizando ferramentas do Kali Linux:
+O primeiro teste consiste na fusão do tráfego benigno com três tipos de ataques DoS gerados manualmente em um ambiente controlado, utilizando a ferramenta Hping do Kali Linux:
 
 • **SYN Flood**
   - Envio massivo de pacotes SYN visando sobrecarregar o servidor alvo.
