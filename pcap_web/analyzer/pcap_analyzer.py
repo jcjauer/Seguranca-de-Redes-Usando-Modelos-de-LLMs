@@ -531,7 +531,7 @@ def calcular_score_malware(dados, padroes_suspeitos, iocs_e_dominios):
     # Limitar score máximo
     score = min(score, 100)
 
-    return {"score": score, "nivel": get_risk_level(score), "evidencias": evidencias}
+    return {"score": score, "nivel_risco": get_risk_level(score), "evidencias": evidencias}
 
 
 def get_risk_level(score):
@@ -1713,11 +1713,20 @@ def analisar_com_llm_hibrido(
     relatorio_yara = sanitize_yara_only(relatorio_yara)
     
     prompt = f"""
+═══════════════════════════════════════════════════════════════
+📋 RELATÓRIO YARA - LEIA ESTA SEÇÃO PRIMEIRO
+═══════════════════════════════════════════════════════════════
+
+{relatorio_yara}
+
+🚨 IMPORTANTE: Se houver detecções YARA acima (linhas começando com "1.", "2.", etc.),
+você DEVE copiar os nomes exatos das regras na seção 2 (CORRELAÇÃO YARA-TRÁFEGO).
+NÃO invente nomes, NÃO modifique, use EXATAMENTE como aparecem acima.
+
+═══════════════════════════════════════════════════════════════
+
 DADOS DE TRÁFEGO:
 {dados_formatados}
-
-RELATÓRIO YARA:
-{relatorio_yara}
 
 ═══════════════════════════════════════════════════════════════
 INSTRUÇÕES DE ANÁLISE
@@ -1827,7 +1836,14 @@ FORMATO DE RESPOSTA (8 seções obrigatórias):
    - Se houver ataques com severidade "ALTO" → RISCO ALTO
    - Se não houver ataques confirmados → Analise outros indicadores
 
-2. CORRELAÇÃO YARA-TRÁFEGO: [resultado ou "nenhuma detecção"]
+2. CORRELAÇÃO YARA-TRÁFEGO:
+   Consulte a seção "📋 RELATÓRIO YARA" no início deste prompt.
+   
+   - Se houver "🚨 RELATÓRIO YARA AVANÇADO - X DETECÇÕES": Liste aqui os nomes exatos das regras detectadas com suas severidades
+   - Se houver "✅ Nenhuma detecção YARA": Escreva apenas "✅ Nenhuma detecção YARA"
+   - Se houver "⚠️ Análise YARA não aplicável": Escreva apenas "⚠️ Análise YARA não aplicável"
+   
+   IMPORTANTE: Copie os nomes das regras EXATAMENTE como aparecem no relatório (não invente, não modifique)
 
 3. AMEAÇAS IDENTIFICADAS:
    SE HOUVER "✅ NENHUM ATAQUE DETECTADO":
@@ -2092,8 +2108,32 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None, a
         if relatorio_yara_resultado.get("deteccoes"):
             for deteccao in relatorio_yara_resultado["deteccoes"]:
                 regra = deteccao.get("regra", "Desconhecido")
-                # Limpar nome da regra (remover sufixos técnicos se houver)
-                familia = regra.replace("_", " ").strip()
+                
+                # Extrair nome da família de malware (parte principal antes de sufixos técnicos)
+                # Exemplos:
+                # "Bumblebee_Core_Network_Traffic" → "Bumblebee"
+                # "Neutrino_EK_Real_Payload_Signatures" → "Neutrino EK"
+                # "Win32_Trojan_Emotet" → "Emotet"
+                
+                if "Neutrino" in regra:
+                    familia = "Neutrino Exploit Kit"
+                elif "Bumblebee" in regra:
+                    familia = "Bumblebee Malware"
+                elif "Emotet" in regra:
+                    familia = "Emotet Trojan"
+                elif "TrickBot" in regra:
+                    familia = "TrickBot Banking Trojan"
+                elif "Dridex" in regra:
+                    familia = "Dridex Banking Trojan"
+                elif "DarkGate" in regra:
+                    familia = "DarkGate RAT"
+                else:
+                    # Fallback: pegar primeira palavra ou até underscore
+                    primeira_parte = regra.split("_")[0]
+                    familia = primeira_parte.replace("Win32", "").replace("Trojan", "").strip()
+                    if not familia:
+                        familia = regra.replace("_", " ").strip()
+                
                 malware_signatures[familia] = malware_signatures.get(familia, 0) + 1
         
         # Atualizar score de malware com detecções YARA
@@ -2126,7 +2166,22 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None, a
             
             # Atualizar score (máximo 100)
             scoring_result["score"] = min(scoring_result["score"] + yara_score_adicional, 100)
-            scoring_result["nivel_risco"] = get_risk_level(scoring_result["score"])
+            novo_nivel = get_risk_level(scoring_result["score"])
+            
+            # CRÍTICO: Detecção YARA SEMPRE eleva risco para no mínimo ALTO
+            # Malware confirmado por assinatura = risco automático elevado
+            if severidade_maxima in ["critica", "alta"]:
+                # Força risco CRÍTICO para malware crítico/alto
+                scoring_result["nivel_risco"] = "CRÍTICO"
+            elif severidade_maxima == "media" and novo_nivel not in ["CRÍTICO", "ALTO"]:
+                # Força risco ALTO para malware médio (se não for já CRÍTICO)
+                scoring_result["nivel_risco"] = "ALTO"
+            else:
+                # Para malware baixo, usa o nível calculado (mas mínimo MÉDIO)
+                if novo_nivel in ["MÍNIMO", "BAIXO"]:
+                    scoring_result["nivel_risco"] = "MÉDIO"
+                else:
+                    scoring_result["nivel_risco"] = novo_nivel
 
         # Adicionar contexto avançado para o LLM (sem assinaturas)
         contexto_avancado = f"""
