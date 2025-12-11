@@ -7,14 +7,14 @@ Este projeto permite analisar arquivos PCAP (capturas de pacotes de rede) utiliz
 
 ## Sumário
 
-- [Estrutura do projeto](#-estrutura-do-projeto)
-- [Quick Start](#-quick-start)
-- [Pré-requisitos](#-pré-requisitos)
+- [Estrutura do projeto](#️-estrutura-do-projeto)
+- [Funcionalidades](#-funcionalidades)
+- [Tecnologias Utilizadas](#-tecnologias-utilizadas)
+- [Pré-requisitos](#️-pré-requisitos)
 - [Instalação](#-instalação)
-- [Execução e exemplos](#-execução-e-exemplos)
-- [Tecnologias](#-tecnologias-utilizadas)
-- [Modelos LLM suportados](#-modelos-llm-suportados)
-- [Tipos de Anomalias Detectadas](#-tipos-de-anomalias-detectadas)
+- [Execução](#️-execução)
+- [Experimentos](#-experimentos)
+- [Relatório Formatado para LLM](#-relatório-formatado-para-llm)
 - [Troubleshooting](#-troubleshooting)
 - [Referências](#-referências)
 
@@ -26,7 +26,7 @@ Segurança-de-Redes-Usando-Modelos-de-LLMs/
 ├── requirements.txt           # Dependências Python
 ├── README.md                  # Este arquivo
 ├── exemplo.pcap               # Arquivo PCAP de exemplo
-└── pcap_web/                   # Aplicação Django (se aplicável)
+└── pcap_web/                  # Aplicação web (Django)
 ```
 
 ## 🚀 Funcionalidades
@@ -46,11 +46,12 @@ Segurança-de-Redes-Usando-Modelos-de-LLMs/
 
 ## 🔧 Tecnologias Utilizadas
 
-- **Python 3.10+** - Linguagem principal
-- **Scapy** - Manipulação e análise de pacotes de rede
-- **Ollama** - Interface para modelos LLM locais
-- **Tkinter** - Interface gráfica nativa do Python
-- **LLaMA 3/Mistral/Gemma** - Modelos de IA para análise
+- **Python 3.10+** – Linguagem principal
+- **Scapy** – Manipulação e análise de pacotes de rede
+- **Ollama** – Host de modelos LLM locais
+- **Django** – Interface web para upload/análise de PCAPs
+- **Tkinter** – Interface gráfica nativa (uso opcional)
+- **LLaMA 3 / Mistral / Gemma** – Modelos de IA para análise
 
 ## 🛠️ Pré-requisitos
 
@@ -98,7 +99,9 @@ ollama pull mistral
 ollama pull gemma
 ```
 
-### 5. Preparação e execução da interface web (Django)
+## ▶️ Execução
+
+### Web (Django)
 
 1) Migrar o banco de dados
 
@@ -125,16 +128,47 @@ Inicie o servidor (a partir da raiz do projeto):
 python pcap_web/manage.py runserver
 ```
 
-Acesse a interface em: http://127.0.0.1:8000
+Abra: http://127.0.0.1:8000
 
-### Gerar PCAP com anomalias para teste
+### CLI
 
-Se desejar gerar um arquivo de teste com anomalias (port scan, DDoS simulado, tráfego de alta entropia etc.), execute:
-```bash
+Gerar um PCAP com anomalias (port scan, DDoS simulado, alta entropia):
+```powershell
 python gerar_pcap_anomalias.py
 ```
+O arquivo `anomalias_seguranca.pcap` é salvo na raiz do projeto.
 
-Observação: por padrão o gerador salva o arquivo `anomalias_seguranca.pcap` na raiz do projeto e imprime o caminho absoluto ao final da execução.
+## 🧪 Experimentos
+
+Este projeto inclui uma série de experimentos práticos que demonstram a eficácia do sistema na detecção de ameaças reais. Foram criados quatro cenários distintos combinando tráfego benigno com diferentes tipos de ataques e malwares:
+
+- **Teste 1**: Ataques DoS (SYN Flood, UDP Flood, Distributed SYN Flood) gerados em ambiente controlado
+- **Teste 2**: Malware Bumblebee (loader de ransomware/infostealer) com tráfego benigno
+- **Teste 3**: Malware Neutrino (exploit kit) integrado a comunicações normais
+- **Teste 4**: Combinação Neutrino + Bumblebee sem tráfego benigno (cenário de múltiplas ameaças)
+
+Cada teste foi construído utilizando `mergecap` para simular ambientes realistas onde atividades maliciosas coexistem com tráfego legítimo. Os experimentos incluem detecções via YARA (regras de assinatura) e heurísticas (DDoS, port scanning, alta entropia, botnet), além de amostras reais capturadas pelos modelos LLM.
+
+**📄 Documentação completa dos experimentos:**  
+[experimentos/README.md](https://github.com/jcjauer/Seguranca-de-Redes-Usando-Modelos-de-LLMs/blob/main/experimentos/README.md)
+
+## 📋 Relatório Formatado para LLM
+
+O sistema gera um relatório estruturado que combina múltiplas fontes de análise de segurança antes de enviá-lo aos modelos de linguagem. Este relatório consolidado inclui:
+
+- **Estatísticas gerais do PCAP**: Total de pacotes, protocolos identificados, IPs envolvidos, distribuição temporal
+- **Relatório YARA**: Detecções de malware via assinaturas (classificadas por severidade: ALTA, MÉDIA, BAIXA)
+- **Análise Heurística**: Identificação de padrões suspeitos como:
+  - Ataques de flood (SYN/UDP/ICMP/ACK)
+  - Port scanning e reconhecimento
+  - Comunicação com botnets (múltiplos destinos)
+  - Payloads com alta entropia (possível C2 ou criptografia)
+- **Extração de Payloads**: Conteúdo relevante de requisições HTTP, streams TCP/UDP para análise contextual
+
+O relatório é formatado de maneira a otimizar a compreensão dos modelos LLM, permitindo que identifiquem correlações entre diferentes tipos de evidências e gerem análises mais precisas sobre a natureza e severidade das ameaças detectadas.
+
+**📄 Estrutura detalhada do relatório:**  
+[RELATORIO_FORMATADO_PARA_LLM.md](https://github.com/jcjauer/Seguranca-de-Redes-Usando-Modelos-de-LLMs/blob/main/RELATORIO_FORMATADO_PARA_LLM.md)
 
 ## 🚨 Troubleshooting
 
