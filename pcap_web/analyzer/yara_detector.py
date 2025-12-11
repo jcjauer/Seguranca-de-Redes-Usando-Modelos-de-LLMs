@@ -748,7 +748,7 @@ def gerar_relatorio_yara_melhorado(deteccoes_yara):
         "total_deteccoes": len(deteccoes_yara),
         "regras_ativadas": len(deteccoes_por_regra),
         "relatorio_texto": relatorio_texto,
-        "deteccoes": deteccoes_yara[:10],  # Top 10 para detalhes
+        "deteccoes": deteccoes_classificadas,  # TODAS as detecções
     }
 
 

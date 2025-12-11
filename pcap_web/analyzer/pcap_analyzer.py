@@ -1494,35 +1494,59 @@ PROTOCOLOS DETECTADOS:
     resumo += "🚨 ATAQUES CONFIRMADOS PELO MOTOR HEURÍSTICO:\n"
     resumo += "="*80 + "\n"
     
-    if padroes_suspeitos.get("ddos_attacks"):
-        for attack_key, attack_info in padroes_suspeitos["ddos_attacks"].items():
+    # Verificar se há ataques - dicionário não-vazio
+    ddos_attacks = padroes_suspeitos.get("ddos_attacks", {})
+    
+    if ddos_attacks and len(ddos_attacks) > 0:
+        resumo += f"\n✅ {len(ddos_attacks)} ATAQUE(S) DETECTADO(S):\n\n"
+        
+        # Organizar ataques por tipo para melhor legibilidade
+        ataques_por_tipo = {}
+        for attack_key, attack_info in ddos_attacks.items():
             if isinstance(attack_info, dict):
-                resumo += f"- {attack_info.get('type', 'Ataque')}: "
+                tipo = attack_info.get('type', 'Ataque Desconhecido')
+                if tipo not in ataques_por_tipo:
+                    ataques_por_tipo[tipo] = []
+                ataques_por_tipo[tipo].append(attack_info)
+        
+        # Exibir ataques organizados por tipo
+        for tipo_ataque, ataques_lista in sorted(ataques_por_tipo.items()):
+            resumo += f"\n>>> {tipo_ataque.upper()}: {len(ataques_lista)} detecção(ões)\n"
+            
+            for idx, attack_info in enumerate(ataques_lista, 1):
+                resumo += f"   [{idx}] "
                 
                 # Atacante → Alvo:Porta (se houver)
                 if attack_info.get("attacker"):
-                    resumo += f"{attack_info['attacker']} → "
+                    resumo += f"Origem: {attack_info['attacker']} | "
                 
-                resumo += f"{attack_info.get('target')}"
-                if attack_info.get("port") and not attack_info.get("num_targets"):
-                    resumo += f":{attack_info['port']}"
-                resumo += " "
+                if attack_info.get("target"):
+                    resumo += f"Alvo: {attack_info.get('target')}"
+                    if attack_info.get("port") and not attack_info.get("num_targets"):
+                        resumo += f":{attack_info['port']}"
                 
                 # Métricas detalhadas
                 if attack_info.get("syn_sent"):
-                    resumo += f"(SYN: {attack_info['syn_sent']}, ACK: {attack_info.get('ack_received', 0)}, Ratio: {attack_info.get('ratio', 'N/A')})"
+                    resumo += f" | SYN Enviados: {attack_info['syn_sent']}, ACK Recebidos: {attack_info.get('ack_received', 0)}, Taxa: {attack_info.get('ratio', 'N/A')}"
                 elif attack_info.get("total_syn_packets"):
-                    resumo += f"(Total SYN: {attack_info['total_syn_packets']})"
+                    resumo += f" | Total SYN: {attack_info['total_syn_packets']}"
                 elif attack_info.get("packet_count"):
-                    resumo += f"(Pacotes: {attack_info['packet_count']})"
+                    resumo += f" | Pacotes: {attack_info['packet_count']}"
                 elif attack_info.get("icmp_packets"):
-                    resumo += f"(ICMP: {attack_info['icmp_packets']})"
+                    resumo += f" | Pacotes ICMP: {attack_info['icmp_packets']}"
+                elif attack_info.get("arp_packets"):
+                    resumo += f" | Pacotes ARP: {attack_info['arp_packets']}"
+                elif attack_info.get("ack_packets"):
+                    resumo += f" | Pacotes ACK: {attack_info['ack_packets']}"
                 
                 # Número de atacantes (se distribuído)
-                if attack_info.get("num_attackers") and attack_info["num_attackers"] > 1:
-                    resumo += f" [🎯 {attack_info['num_attackers']} atacantes]"
+                if attack_info.get("num_attackers"):
+                    if attack_info["num_attackers"] > 1:
+                        resumo += f" | 🎯 {attack_info['num_attackers']} atacantes"
+                    else:
+                        resumo += f" | 1 atacante"
                 
-                resumo += f" - Severidade: {attack_info.get('severity', 'DESCONHECIDA')}\n"
+                resumo += f" | 🔴 SEVERIDADE: {attack_info.get('severity', 'DESCONHECIDA')}\n"
     else:
         resumo += "✅ NENHUM ATAQUE DETECTADO\n"
         resumo += "\n"
@@ -1533,8 +1557,9 @@ PROTOCOLOS DETECTADOS:
         resumo += "- ACK Flood (ACKs legítimos)\n"
         resumo += "- DDoS Distribuído (sem múltiplos atacantes coordenados)\n"
         resumo += "- Port Scan massivo (conexões normais)\n"
+        resumo += "- ARP Spoofing ou ARP Flooding\n"
     
-    resumo += "="*80 + "\n"
+    resumo += "\n" + "="*80 + "\n"
     resumo += "FIM DA SEÇÃO DE ATAQUES\n"
     resumo += "="*80 + "\n"
 
@@ -1664,28 +1689,69 @@ def get_port_service(porta):
 
 
 def analisar_com_llm_hibrido(
-    dados_formatados, relatorio_yara, modelo="llama3", host=None, port=None
+    dados_formatados, relatorio_yara, modelo="llama3", host=None, port=None, relatorio_yara_resultado=None
 ):
-    """Análise híbrida: LLM para comportamento + YARA como evidência complementar"""
+    """Análise híbrida: LLM para comportamento + YARA como evidência complementar
+    
+    Args:
+        dados_formatados: String com análise heurística formatada
+        relatorio_yara: String com texto do relatório YARA
+        modelo: Nome do modelo LLM a usar
+        host: Host do Ollama
+        port: Porta do Ollama
+        relatorio_yara_resultado: Dict com detecções YARA estruturadas
+    """
     
     # PROTEÇÃO CONTRA ESTOURO DE CONTEXTO (context window overflow)
-    # Limite: 6000 caracteres (~1500 tokens) para dados, deixando espaço para instruções e resposta
-    MAX_DATA_SIZE = 6000
+    # Limite: 100000 caracteres (~25000 tokens) para permitir TODOS os dados sem truncamento
+    MAX_DATA_SIZE = 100000
     
     # ⚠️ TRUNCAMENTO INTELIGENTE: Priorizar seções críticas
     # Se precisar truncar, remover seções menos críticas primeiro:
-    # 1. Manter: ESTATÍSTICAS, PADRÕES DE ATAQUE (DDoS), HOSTS COM MÚLTIPLAS CONEXÕES
+    # 1. Manter: ESTATÍSTICAS, ATAQUES CONFIRMADOS (DDoS), HOSTS COM MÚLTIPLAS CONEXÕES
     # 2. Reduzir: Domínios DNS (já limitado a 10), IPs únicos (já limitado a 15)
     # 3. Remover: Portas menos acessadas, entropias altas (se necessário)
-    # TODO: Implementar truncamento por prioridade em vez de corte cego
+    # IMPORTANTE: Seção "🚨 ATAQUES CONFIRMADOS" tem MÁXIMA prioridade
     
     if len(dados_formatados) > MAX_DATA_SIZE:
-        dados_truncados = dados_formatados[:MAX_DATA_SIZE]
-        # Encontrar última linha completa
-        last_newline = dados_truncados.rfind('\n')
-        if last_newline > 0:
-            dados_truncados = dados_truncados[:last_newline]
-        dados_formatados = dados_truncados + f"\n\n⚠️ [DADOS TRUNCADOS - Total excedeu {MAX_DATA_SIZE} caracteres para evitar estouro de contexto]\n⚠️ Se informações críticas estiverem faltando, reduza o tamanho do PCAP ou ajuste MAX_DATA_SIZE"
+        # Tentar preservar seção de ataques - ela deve estar no início após estatísticas
+        if "🚨 ATAQUES CONFIRMADOS PELO MOTOR HEURÍSTICO:" in dados_formatados:
+            # Encontrar onde começa e termina a seção de ataques
+            inicio_ataques = dados_formatados.find("🚨 ATAQUES CONFIRMADOS PELO MOTOR HEURÍSTICO:")
+            fim_ataques = dados_formatados.find("FIM DA SEÇÃO DE ATAQUES", inicio_ataques)
+            
+            if fim_ataques > 0:
+                # Extrair seção de ataques completa
+                secao_ataques = dados_formatados[inicio_ataques:fim_ataques + 30]
+                
+                # Truncar o resto dos dados
+                dados_antes = dados_formatados[:inicio_ataques]
+                dados_depois = dados_formatados[fim_ataques + 30:]
+                
+                # Reconstruir mantendo ataques e truncando o resto
+                espaco_restante = MAX_DATA_SIZE - len(secao_ataques) - len(dados_antes) - 200
+                if espaco_restante > 0:
+                    dados_depois_truncados = dados_depois[:espaco_restante]
+                    last_newline = dados_depois_truncados.rfind('\n')
+                    if last_newline > 0:
+                        dados_depois_truncados = dados_depois_truncados[:last_newline]
+                    dados_formatados = dados_antes + secao_ataques + dados_depois_truncados + f"\n\n⚠️ [DADOS PARCIALMENTE TRUNCADOS - Seção de ATAQUES preservada]"
+                else:
+                    dados_formatados = dados_antes + secao_ataques + f"\n\n⚠️ [DADOS TRUNCADOS - Seção de ATAQUES preservada]"
+            else:
+                # Fallback: truncamento simples
+                dados_truncados = dados_formatados[:MAX_DATA_SIZE]
+                last_newline = dados_truncados.rfind('\n')
+                if last_newline > 0:
+                    dados_truncados = dados_truncados[:last_newline]
+                dados_formatados = dados_truncados + f"\n\n⚠️ [DADOS TRUNCADOS]"
+        else:
+            # Sem seção de ataques, truncamento normal
+            dados_truncados = dados_formatados[:MAX_DATA_SIZE]
+            last_newline = dados_truncados.rfind('\n')
+            if last_newline > 0:
+                dados_truncados = dados_truncados[:last_newline]
+            dados_formatados = dados_truncados + f"\n\n⚠️ [DADOS TRUNCADOS]"
     
     if len(relatorio_yara) > MAX_DATA_SIZE:
         yara_truncado = relatorio_yara[:MAX_DATA_SIZE]
@@ -1712,204 +1778,140 @@ def analisar_com_llm_hibrido(
     # dados_formatados já tem sanitização nos domínios DNS
     relatorio_yara = sanitize_yara_only(relatorio_yara)
     
-    prompt = f"""
-═══════════════════════════════════════════════════════════════
-📋 RELATÓRIO YARA - LEIA ESTA SEÇÃO PRIMEIRO
-═══════════════════════════════════════════════════════════════
+    # ============================================================================
+    # FORMATAR DETECÇÕES YARA ESTRUTURADAS SE DISPONÍVEIS (heurística intacta)
+    # ============================================================================
+    yara_estruturado = ""
+    deteccoes_para_estruturar = []
 
+    total_deteccoes_yara = relatorio_yara_resultado.get("total_deteccoes", 0) if relatorio_yara_resultado else 0
+
+    # PRIORIDADE 1: usar detecções estruturadas do dicionário
+    if relatorio_yara_resultado and relatorio_yara_resultado.get("deteccoes"):
+        deteccoes_para_estruturar = relatorio_yara_resultado["deteccoes"]
+
+    # PRIORIDADE 2: se não vierem estruturadas, extrair do texto bruto do relatório YARA
+    if not deteccoes_para_estruturar and relatorio_yara:
+        linhas = relatorio_yara.split("\n")
+        for linha in linhas:
+            if "✓ Detectado:" in linha or "REGRA:" in linha or "Detectado" in linha:
+                deteccoes_para_estruturar.append({
+                    "regra": linha.strip(),
+                    "arquivo": "Extraído do relatório YARA",
+                    "severidade": "ALTA",
+                })
+
+    # PRIORIDADE 3: se total_deteccoes>0 mas lista vazia, sinalizar mesmo assim
+    if not deteccoes_para_estruturar and relatorio_yara_resultado:
+        total = relatorio_yara_resultado.get("total_deteccoes", 0)
+        if total > 0:
+            yara_estruturado = (
+                f"\n🔍 RELATÓRIO YARA:\n" + "=" * 80 + "\n"
+                f"⚠️ YARA sinalizou {total} detecções, mas a lista estruturada está vazia.\n"
+                f"Relatório bruto:\n{relatorio_yara}\n" + "=" * 80 + "\n"
+            )
+
+    # Estruturar detecções quando encontradas
+    if deteccoes_para_estruturar:
+        yara_estruturado = "\n🔍 DETECÇÕES YARA ESTRUTURADAS:\n" + "=" * 80 + "\n"
+        yara_estruturado += f"Total de detecções YARA: {total_deteccoes_yara}\n"
+
+        # Agrupar por regra
+        deteccoes_por_regra = {}
+        for deteccao in deteccoes_para_estruturar:
+            regra = deteccao.get("regra", "Desconhecido")
+            if "✓ Detectado:" in str(regra):
+                regra = regra.replace("✓ Detectado:", "").strip()
+
+            if regra not in deteccoes_por_regra:
+                deteccoes_por_regra[regra] = {
+                    "arquivos": [],
+                    "severidade": deteccao.get("severidade", "ALTA"),
+                }
+
+            arquivo = deteccao.get("arquivo", "Não especificado")
+            if arquivo not in deteccoes_por_regra[regra]["arquivos"]:
+                deteccoes_por_regra[regra]["arquivos"].append(arquivo)
+
+        # Formatar saída agrupada
+        for idx, (regra, info) in enumerate(deteccoes_por_regra.items(), 1):
+            severidade = info["severidade"]
+            arquivos = info["arquivos"]
+
+            yara_estruturado += f"\n[{idx}] REGRA: {regra}\n"
+            yara_estruturado += f"    Severidade: {severidade}\n"
+            yara_estruturado += f"    Arquivos ({len(arquivos)}):\n"
+            for arq in arquivos:
+                yara_estruturado += f"       • {arq}\n"
+
+        yara_estruturado += "\n" + "=" * 80 + "\n"
+
+    # FALLBACK final: nenhuma detecção
+    if not yara_estruturado:
+        yara_estruturado = (
+            "\n🔍 RELATÓRIO YARA:\n" + "=" * 80 + "\n"
+            "✅ Nenhuma detecção YARA encontrada nos arquivos extraídos.\n" + "=" * 80 + "\n"
+        )
+    
+    prompt = f"""
+
+
+📄 RELATÓRIO YARA (COMPLETO - TEXTO ORIGINAL)
 {relatorio_yara}
 
-🚨 IMPORTANTE: Se houver detecções YARA acima (linhas começando com "1.", "2.", etc.),
-você DEVE copiar os nomes exatos das regras na seção 2 (CORRELAÇÃO YARA-TRÁFEGO).
-NÃO invente nomes, NÃO modifique, use EXATAMENTE como aparecem acima.
-
-═══════════════════════════════════════════════════════════════
-
-DADOS DE TRÁFEGO:
+📊 ANÁLISE HEURÍSTICA - PADRÕES DE ATAQUE
 {dados_formatados}
 
 ═══════════════════════════════════════════════════════════════
-INSTRUÇÕES DE ANÁLISE
+INSTRUÇÕES PARA O LLM
 ═══════════════════════════════════════════════════════════════
 
-🚨 IMPORTANTE: A ANÁLISE MATEMÁTICA JÁ FOI FEITA
+Você é um analista de segurança. Analise os dados acima e gere um relatório.
+
+REGRAS:
+1. Use sempre "CONFIRMADO" ou "DETECTADO" (não use "suspeito" ou "possível")
+2. PRIMEIRO, liste TODOS os malwares do RELATÓRIO YARA
+3. SEGUNDO, liste TODOS os ataques da ANÁLISE HEURÍSTICA (veja abaixo)
+4. Se não houver ataques/malwares, escreva "Nenhuma detecção"
+
+ESTRUTURA OBRIGATÓRIA DO RELATÓRIO:
+
+**1. MALWARE (YARA):**
+Formato: "**[NOME]** (severidade [NÍVEL]) em `[ARQUIVO]`"
+Exemplo: "**Bumblebee_Specific_IOCs** (severidade ALTO) em `http_request_4.bin`"
+
+**2. ATAQUES CONFIRMADOS - LISTAR TODOS OS 4 TIPOS ABAIXO:**
+
+🚨 **ATAQUES FLOOD (SYN/UDP/ICMP/ACK):**
+- Formato: "[TIPO] Flood CONFIRMADO contra [IP:PORTA] com [NÚMERO] pacotes, [NÚMERO] atacante(s), severidade [NÍVEL]"
+- Exemplo: "SYN Flood CONFIRMADO contra 192.168.1.100:80 com 5000 pacotes SYN, 1 atacante, severidade CRÍTICO"
+
+🔗 **MÚLTIPLAS CONEXÕES (BOTNET):**
+- Formato: "[IP] estabeleceu conexões para [N] destinos externos distintos, severidade [NÍVEL]"
+- Exemplo: "192.168.1.50 estabeleceu conexões para 23 destinos externos distintos, severidade ALTO"
+
+🔍 **PORT SCANNING:**
+- Formato: "[IP_ORIGEM] tentou acessar [N] portas diferentes em [IP_DESTINO], severidade [NÍVEL]"
+- Exemplo: "192.168.1.100 tentou acessar 47 portas diferentes em 10.0.0.1, severidade MÉDIO"
+
+📡 **PACOTES COM ALTA ENTROPIA (C2):**
+- Formato: "[IP_ORIGEM] → [IP_DESTINO]:[PORTA] com entropia [VALOR], severidade [NÍVEL]"
+- Exemplo: "192.168.1.50 → 203.0.113.100:8080 com entropia 7.92, severidade ALTO"
+
+**3. CLASSIFICAÇÃO DE RISCO:**
+CRÍTICO / ALTO / MÉDIO / BAIXO
+
+**4. RECOMENDAÇÕES:**
+Ações específicas para cada ameaça detectada
+
 ═══════════════════════════════════════════════════════════════
-
-Os ataques listados na seção "🚨 ATAQUES CONFIRMADOS PELO MOTOR HEURÍSTICO" 
-foram detectados por algoritmos de correlação bidirecional e análise estatística.
-
- Procure os ataques e de sua opinião no caso de não haver dados da heuristica.
-
-Se houver ataques confirmados acima:
-✅ ACEITE-OS COMO FATOS (não questione os números)
-✅ EXPLIQUE o impacto de cada ataque
-✅ RECOMENDE ações de mitigação específicas
-
-NÃO tente "descobrir" ataques analisando estatísticas gerais.
-NÃO confunda diferentes categorias de tráfego:
-- "🚨 ATAQUES CONFIRMADOS" = Ataques DDoS reais (aceite como fato)
-- "🔗 MÚLTIPLAS CONEXÕES" = Comportamento de botnet/scanner (não é DDoS)
-- "🔍 TESTES DE PORTAS" = Port scanning (não é flood)
-
-═══════════════════════════════════════════════════════════════
-
-🚨 REGRAS DE ANÁLISE:
-1. Porta >30000 no IP INTERNO (192.168.x.x) = porta efêmera do cliente (NORMAL)
-2. Cliente interno → Provedor externo porta 443 = Navegação HTTPS (NORMAL)
-3. Alta entropia em porta 443/8443 = TLS/SSL legítimo (NÃO é C2 automaticamente)
-4. IPs filtrados pela whitelist (Google, Cloudflare, AWS) = tráfego legítimo
-
-⚠️ NOTA: Não tente identificar ASNs ou provedores - use apenas os IPs como estão.
-O sistema já filtrou IPs conhecidos. IPs restantes são desconhecidos e requerem investigação.
-
-⚠️ ATENÇÃO ESPECIAL:
-- Se houver seção "📊 ALTO VOLUME DE PACOTES" nos dados acima, VOCÊ DEVE INCLUIR ISSO NA SUA ANÁLISE
-- Se houver ataques DDoS detectados (SYN Flood, UDP Flood, etc), MENCIONE-OS na seção 5 (PADRÕES DE ATAQUE)
-- Use os NÚMEROS EXATOS que aparecem nos dados (ex: "2000 SYN packets", não "muitos pacotes")
-
-PROCESSO DE ANÁLISE OBRIGATÓRIO:
-
-ETAPA 1 - ANÁLISE DE IPs:
-⚠️ O sistema já filtrou IPs conhecidos (Google, Cloudflare, AWS, Azure, Akamai).
-Os IPs listados na seção "🎯 IPs DE DESTINO ÚNICOS" são desconhecidos e requerem investigação.
-
-Para cada IP desconhecido:
-- Verifique se há volume anormal (muitos pacotes)
-- Verifique se há portas suspeitas (<1024 ou >49152)
-- Verifique se está associado a padrões de ataque (DDoS, port scan)
-
-NÃO tente identificar provedores ou ASNs - isso causa informações incorretas.
-
-ETAPA 2 - ANÁLISE DE ATAQUES CONFIRMADOS:
-🔍 PROCURE ESTA SEÇÃO NOS DADOS ACIMA:
-
-================================================================================
-🚨 ATAQUES CONFIRMADOS PELO MOTOR HEURÍSTICO:
-================================================================================
-
-A seção acima terá UMA DAS DUAS OPÇÕES:
-
-OPÇÃO A - ATAQUES DETECTADOS:
-- SYN Flood: 192.168.1.100 → 192.168.1.1:80 (SYN: 5000, ACK: 50, Ratio: 0.01) - Severidade: CRÍTICO
-- UDP Flood: 203.0.113.10 (Pacotes: 10000) [🎯 5 atacantes] - Severidade: CRÍTICO
-[etc...]
-
-OPÇÃO B - NENHUM ATAQUE:
-✅ NENHUM ATAQUE DETECTADO
-O motor heurístico analisou o tráfego e não identificou:
-- SYN Flood (ratio de resposta normal)
-- UDP Flood (volume dentro dos limites)
-[etc...]
-
-SE ENCONTRAR OPÇÃO A (ATAQUES DETECTADOS):
-✅ ACEITE como VERDADEIROS (matemática já validada)
-✅ EXPLIQUE o impacto de cada ataque
-✅ RECOMENDE mitigação específica
-✅ Use os números EXATOS fornecidos
-✅ Classifique risco baseado na severidade dos ataques
-
-SE ENCONTRAR OPÇÃO B (NENHUM ATAQUE):
-✅ Escreva "Nenhum ataque confirmado pelo motor heurístico"
-✅ Classifique risco baseado em outros indicadores:
-   - Múltiplas conexões = possível botnet/scanner (MÉDIO)
-   - Port scan = reconhecimento (MÉDIO/BAIXO)
-   - Tráfego normal para serviços conhecidos = BAIXO/NORMAL
-❌ NÃO invente ataques DDoS se não estiverem na seção de ataques confirmados
-
-CONTEXTO PARA CLASSIFICAÇÃO DE RISCO:
-- Se houver ataques com severidade CRÍTICO → Risco CRÍTICO
-- Se houver ataques com severidade ALTO → Risco ALTO
-- Se nenhum ataque + tráfego normal → Risco BAIXO/NORMAL
-- Cliente → Google/Cloudflare/AWS porta 443 = Navegação NORMAL
-- Pacotes jumbo em HTTPS = Streaming/download NORMAL
-
-ETAPA 3 - CONCLUSÃO FINAL:
-- Se houver ATAQUES CONFIRMADOS → LISTE-OS e EXPLIQUE o impacto
-- Se 90%+ dos IPs são Google/CDN/ISP = RISCO PODE SER BAIXO (mas ataques confirmados são CRÍTICOS)
-- Se há IPs desconhecidos com portas estranhas = Investigar apenas estes
-
-FORMATO DE RESPOSTA (8 seções obrigatórias):
-
-1. CLASSIFICAÇÃO DE RISCO: [Crítico/Alto/Médio/Baixo/Normal]
-   Baseie-se PRIMEIRAMENTE nos ataques confirmados:
-   - Se houver ataques com severidade "CRÍTICO" → RISCO CRÍTICO
-   - Se houver ataques com severidade "ALTO" → RISCO ALTO
-   - Se não houver ataques confirmados → Analise outros indicadores
-
-2. CORRELAÇÃO YARA-TRÁFEGO:
-   Consulte a seção "📋 RELATÓRIO YARA" no início deste prompt.
-   
-   - Se houver "🚨 RELATÓRIO YARA AVANÇADO - X DETECÇÕES": Liste aqui os nomes exatos das regras detectadas com suas severidades
-   - Se houver "✅ Nenhuma detecção YARA": Escreva apenas "✅ Nenhuma detecção YARA"
-   - Se houver "⚠️ Análise YARA não aplicável": Escreva apenas "⚠️ Análise YARA não aplicável"
-   
-   IMPORTANTE: Copie os nomes das regras EXATAMENTE como aparecem no relatório (não invente, não modifique)
-
-3. AMEAÇAS IDENTIFICADAS:
-   SE HOUVER "✅ NENHUM ATAQUE DETECTADO":
-   - Escreva: "Nenhum ataque confirmado pelo motor heurístico"
-   - Mencione outros indicadores (se houver): port scan, múltiplas conexões, etc.
-   
-   SE HOUVER ATAQUES LISTADOS:
-   - Liste TODOS os ataques com métricas
-   - Exemplo: "SYN Flood: 192.168.1.100 → 192.168.1.1:80 (SYN: 5000, Ratio: 0.01) - CRÍTICO"
-
-4. HOSTS COMPROMETIDOS:
-   SE HOUVER "✅ NENHUM ATAQUE DETECTADO":
-   - Escreva: "Não identificado - nenhum ataque confirmado"
-   
-   SE HOUVER ATAQUES LISTADOS:
-   - Vítimas: IPs que aparecem como "target"
-   - Atacantes: IPs que aparecem como "attacker"
-
-5. PADRÕES DE ATAQUE:
-   SE HOUVER "✅ NENHUM ATAQUE DETECTADO":
-   - Escreva: "Nenhum padrão de ataque DDoS detectado pelo motor heurístico"
-   - Explique: "O sistema analisou correlação TCP bidirecional, volumes UDP/ICMP/ACK,
-     e não encontrou anomalias que indiquem SYN Flood, UDP Flood, DDoS distribuído,
-     ou outros ataques volumétricos."
-   - Mencione outros indicadores se relevantes (port scan, múltiplas conexões)
-   
-   SE HOUVER ATAQUES LISTADOS:
-   Para cada ataque confirmado, EXPLIQUE:
-   - O que é o ataque (ex: SYN Flood = esgotar recursos TCP do servidor)
-   - Por que os números indicam ataque (ex: Ratio 0.01 = 99% dos SYNs sem resposta)
-   - Qual o impacto (ex: Servidor pode ficar indisponível)
-   
-   Exemplo:
-   ```
-   - SYN Flood: 192.168.1.100 → 192.168.1.1:80
-     Métricas: SYN: 5000, ACK: 50, Ratio: 0.01
-     Análise: Taxa de resposta de apenas 1% indica flood
-     Impacto: Serviço web pode estar indisponível
-   ```
-   
-   🚫 NÃO invente ataques que não estão na seção "🚨 ATAQUES CONFIRMADOS"!
-   🚫 NÃO transforme "múltiplas conexões" em ataques DDoS!
-   
-6. AÇÕES IMEDIATAS:
-   SE HOUVER ATAQUES CONFIRMADOS:
-   - Comandos específicos para bloquear IPs atacantes
-   - Ativar rate limiting nas portas afetadas
-   
-   SE NENHUM ATAQUE:
-   - "Nenhuma ação imediata necessária - tráfego normal"
-
-7. INVESTIGAÇÃO FORENSE:
-   SE HOUVER ATAQUES CONFIRMADOS:
-   - Passos numerados para investigar origem, duração, danos
-   
-   SE NENHUM ATAQUE:
-   - "Nenhuma investigação forense necessária para ataques DDoS"
-
-8. REMEDIAÇÃO:
-   SE HOUVER ATAQUES CONFIRMADOS:
-   - Imediato: Bloquear atacantes, ativar DDoS protection
-   - Longo prazo: WAF, rate limiting, redundância
-   
-   SE NENHUM ATAQUE:
-   - "Nenhuma remediação necessária - tráfego normal"
 """
+    
+    # Configurar host e porta do Ollama
+    if host is None:
+        host = settings.OLLAMA_HOST
+    if port is None:
+        port = settings.OLLAMA_PORT
 
     try:
         # Configurar cliente Ollama com host/port específico (thread-safe)
@@ -2215,7 +2217,8 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
             logger.info("🤖 Executando análise híbrida com LLM...")
             try:
                 analise_llm = analisar_com_llm_hibrido(
-                    dados_formatados, relatorio_yara_texto, modelo, host=host, port=port
+                    dados_formatados, relatorio_yara_texto, modelo, host=host, port=port, 
+                    relatorio_yara_resultado=relatorio_yara_resultado
                 )
             except Exception as e_llm:
                 logger.error(f"Falha na análise LLM: {e_llm}. Retornando erro.")
