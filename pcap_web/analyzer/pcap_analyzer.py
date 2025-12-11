@@ -1689,13 +1689,22 @@ def get_port_service(porta):
 
 
 def analisar_com_llm_hibrido(
-    dados_formatados, relatorio_yara, modelo="llama3", host=None, port=None
+    dados_formatados, relatorio_yara, modelo="llama3", host=None, port=None, relatorio_yara_resultado=None
 ):
-    """Análise híbrida: LLM para comportamento + YARA como evidência complementar"""
+    """Análise híbrida: LLM para comportamento + YARA como evidência complementar
+    
+    Args:
+        dados_formatados: String com análise heurística formatada
+        relatorio_yara: String com texto do relatório YARA
+        modelo: Nome do modelo LLM a usar
+        host: Host do Ollama
+        port: Porta do Ollama
+        relatorio_yara_resultado: Dict com detecções YARA estruturadas
+    """
     
     # PROTEÇÃO CONTRA ESTOURO DE CONTEXTO (context window overflow)
-    # Limite: 10000 caracteres (~2500 tokens) para dados, deixando espaço para instruções e resposta
-    MAX_DATA_SIZE = 10000
+    # Limite: 100000 caracteres (~25000 tokens) para permitir TODOS os dados sem truncamento
+    MAX_DATA_SIZE = 100000
     
     # ⚠️ TRUNCAMENTO INTELIGENTE: Priorizar seções críticas
     # Se precisar truncar, remover seções menos críticas primeiro:
@@ -1769,72 +1778,131 @@ def analisar_com_llm_hibrido(
     # dados_formatados já tem sanitização nos domínios DNS
     relatorio_yara = sanitize_yara_only(relatorio_yara)
     
-    prompt = f"""
-═══════════════════════════════════════════════════════════════
-📋 RELATÓRIO YARA - ANÁLISE DE MALWARE
-═══════════════════════════════════════════════════════════════
+    # ============================================================================
+    # FORMATAR DETECÇÕES YARA ESTRUTURADAS SE DISPONÍVEIS (heurística intacta)
+    # ============================================================================
+    yara_estruturado = ""
+    deteccoes_para_estruturar = []
 
+    total_deteccoes_yara = relatorio_yara_resultado.get("total_deteccoes", 0) if relatorio_yara_resultado else 0
+
+    # PRIORIDADE 1: usar detecções estruturadas do dicionário
+    if relatorio_yara_resultado and relatorio_yara_resultado.get("deteccoes"):
+        deteccoes_para_estruturar = relatorio_yara_resultado["deteccoes"]
+
+    # PRIORIDADE 2: se não vierem estruturadas, extrair do texto bruto do relatório YARA
+    if not deteccoes_para_estruturar and relatorio_yara:
+        linhas = relatorio_yara.split("\n")
+        for linha in linhas:
+            if "✓ Detectado:" in linha or "REGRA:" in linha or "Detectado" in linha:
+                deteccoes_para_estruturar.append({
+                    "regra": linha.strip(),
+                    "arquivo": "Extraído do relatório YARA",
+                    "severidade": "ALTA",
+                })
+
+    # PRIORIDADE 3: se total_deteccoes>0 mas lista vazia, sinalizar mesmo assim
+    if not deteccoes_para_estruturar and relatorio_yara_resultado:
+        total = relatorio_yara_resultado.get("total_deteccoes", 0)
+        if total > 0:
+            yara_estruturado = (
+                f"\n🔍 RELATÓRIO YARA:\n" + "=" * 80 + "\n"
+                f"⚠️ YARA sinalizou {total} detecções, mas a lista estruturada está vazia.\n"
+                f"Relatório bruto:\n{relatorio_yara}\n" + "=" * 80 + "\n"
+            )
+
+    # Estruturar detecções quando encontradas
+    if deteccoes_para_estruturar:
+        yara_estruturado = "\n🔍 DETECÇÕES YARA ESTRUTURADAS:\n" + "=" * 80 + "\n"
+        yara_estruturado += f"Total de detecções YARA: {total_deteccoes_yara}\n"
+
+        # Agrupar por regra
+        deteccoes_por_regra = {}
+        for deteccao in deteccoes_para_estruturar:
+            regra = deteccao.get("regra", "Desconhecido")
+            if "✓ Detectado:" in str(regra):
+                regra = regra.replace("✓ Detectado:", "").strip()
+
+            if regra not in deteccoes_por_regra:
+                deteccoes_por_regra[regra] = {
+                    "arquivos": [],
+                    "severidade": deteccao.get("severidade", "ALTA"),
+                }
+
+            arquivo = deteccao.get("arquivo", "Não especificado")
+            if arquivo not in deteccoes_por_regra[regra]["arquivos"]:
+                deteccoes_por_regra[regra]["arquivos"].append(arquivo)
+
+        # Formatar saída agrupada
+        for idx, (regra, info) in enumerate(deteccoes_por_regra.items(), 1):
+            severidade = info["severidade"]
+            arquivos = info["arquivos"]
+
+            yara_estruturado += f"\n[{idx}] REGRA: {regra}\n"
+            yara_estruturado += f"    Severidade: {severidade}\n"
+            yara_estruturado += f"    Arquivos ({len(arquivos)}):\n"
+            for arq in arquivos:
+                yara_estruturado += f"       • {arq}\n"
+
+        yara_estruturado += "\n" + "=" * 80 + "\n"
+
+    # FALLBACK final: nenhuma detecção
+    if not yara_estruturado:
+        yara_estruturado = (
+            "\n🔍 RELATÓRIO YARA:\n" + "=" * 80 + "\n"
+            "✅ Nenhuma detecção YARA encontrada nos arquivos extraídos.\n" + "=" * 80 + "\n"
+        )
+    
+    prompt = f"""
+
+
+📄 RELATÓRIO YARA (COMPLETO - TEXTO ORIGINAL)
 {relatorio_yara}
 
-═══════════════════════════════════════════════════════════════
 📊 ANÁLISE HEURÍSTICA - PADRÕES DE ATAQUE
-═══════════════════════════════════════════════════════════════
-
 {dados_formatados}
 
 ═══════════════════════════════════════════════════════════════
-📝 INSTRUÇÕES
+INSTRUÇÕES PARA O LLM
 ═══════════════════════════════════════════════════════════════
 
-Você é um analista de segurança. Acima você recebeu:
-1. RELATÓRIO YARA (detecções de malware por assinaturas)
-2. ANÁLISE HEURÍSTICA (ataques DDoS, port scan, múltiplas conexões, ARP flooding, etc)
+Você é um analista de segurança. Analise os dados acima e gere um relatório.
 
-VOCABULÁRIO OBRIGATÓRIO:
-- Use "CONFIRMADO" ou "DETECTADO" (NÃO "suspeito", "possível", "indica")
-- Use "ATAQUE" (NÃO "atividade suspeita")
+REGRAS:
+1. Use sempre "CONFIRMADO" ou "DETECTADO" (não use "suspeito" ou "possível")
+2. PRIMEIRO, liste TODOS os malwares do RELATÓRIO YARA
+3. SEGUNDO, liste TODOS os ataques da ANÁLISE HEURÍSTICA (veja abaixo)
+4. Se não houver ataques/malwares, escreva "Nenhuma detecção"
 
-⚠️ INSTRUÇÃO CRÍTICA - LEIA COM ATENÇÃO:
+ESTRUTURA OBRIGATÓRIA DO RELATÓRIO:
 
-Na seção "🚨 ATAQUES CONFIRMADOS PELO MOTOR HEURÍSTICO" acima:
-- Se houver "✅ X ATAQUE(S) DETECTADO(S):" = há X ataques que VOCÊ DEVE LISTAR
-- Cada ataque está marcado com ">>>" e contém: [tipo] | Origem | Alvo | Métricas | Severidade
-- TODOS os ataques listados devem aparecer no seu relatório final
+**1. MALWARE (YARA):**
+Formato: "**[NOME]** (severidade [NÍVEL]) em `[ARQUIVO]`"
+Exemplo: "**Bumblebee_Specific_IOCs** (severidade ALTO) em `http_request_4.bin`"
 
-REGRAS OBRIGATÓRIAS:
+**2. ATAQUES CONFIRMADOS - LISTAR TODOS OS 4 TIPOS ABAIXO:**
 
-1. INICIE mencionando AMBOS os relatórios:
-   - "De acordo com o RELATÓRIO YARA: [malwares encontrados ou 'nenhuma detecção']"
-   - "De acordo com a ANÁLISE HEURÍSTICA: [LISTE TODOS os tipos de ataque ou 'nenhum']"
-   
-2. SE HOUVER ATAQUES HEURÍSTICOS:
-   - LISTA CADA tipo de ataque separadamente
-   - Para cada ataque, inclua: tipo + alvo + números exatos + severidade
-   - Exemplo: "Ataque SYN Flood CONFIRMADO contra 192.168.1.1:80 com 500 SYN packets, severidade ALTO"
-   - Exemplo: "Ataque UDP Flood CONFIRMADO contra 10.0.0.5 com 2000 pacotes, 3 atacantes, severidade CRÍTICO"
-   - Exemplo: "Ataque ARP Flooding CONFIRMADO com 371 pacotes ARP, severidade MÉDIO"
+🚨 **ATAQUES FLOOD (SYN/UDP/ICMP/ACK):**
+- Formato: "[TIPO] Flood CONFIRMADO contra [IP:PORTA] com [NÚMERO] pacotes, [NÚMERO] atacante(s), severidade [NÍVEL]"
+- Exemplo: "SYN Flood CONFIRMADO contra 192.168.1.100:80 com 5000 pacotes SYN, 1 atacante, severidade CRÍTICO"
 
-3. SE NÃO HOUVER ATAQUES:
-   - "Nenhuma detecção YARA"
-   - "Nenhum ataque confirmado pelo motor heurístico"
+🔗 **MÚLTIPLAS CONEXÕES (BOTNET):**
+- Formato: "[IP] estabeleceu conexões para [N] destinos externos distintos, severidade [NÍVEL]"
+- Exemplo: "192.168.1.50 estabeleceu conexões para 23 destinos externos distintos, severidade ALTO"
 
-ESTRUTURA OBRIGATÓRIA:
+🔍 **PORT SCANNING:**
+- Formato: "[IP_ORIGEM] tentou acessar [N] portas diferentes em [IP_DESTINO], severidade [NÍVEL]"
+- Exemplo: "192.168.1.100 tentou acessar 47 portas diferentes em 10.0.0.1, severidade MÉDIO"
 
-**1. MALWARE DETECTADO (YARA):**
-- [Liste cada malware DETECTADO com arquivo e severidade]
-
-**2. ATAQUES CONFIRMADOS (HEURÍSTICA):**
-- [LISTA TODOS - tipo de ataque + alvo + números + severidade]
-- Se vários ataques do mesmo tipo: liste cada um separadamente
+📡 **PACOTES COM ALTA ENTROPIA (C2):**
+- Formato: "[IP_ORIGEM] → [IP_DESTINO]:[PORTA] com entropia [VALOR], severidade [NÍVEL]"
+- Exemplo: "192.168.1.50 → 203.0.113.100:8080 com entropia 7.92, severidade ALTO"
 
 **3. CLASSIFICAÇÃO DE RISCO:**
-- CRÍTICO / ALTO / MÉDIO / BAIXO
+CRÍTICO / ALTO / MÉDIO / BAIXO
 
-**4. IMPACTO:**
-- [Consequências de CADA malware e CADA ataque DETECTADO]
-
-**5. RECOMENDAÇÕES:**
-- [Ações específicas para CADA ameaça DETECTADA]
+**4. RECOMENDAÇÕES:**
+Ações específicas para cada ameaça detectada
 
 ═══════════════════════════════════════════════════════════════
 """
@@ -2110,7 +2178,8 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
             logger.info("🤖 Executando análise híbrida com LLM...")
             try:
                 analise_llm = analisar_com_llm_hibrido(
-                    dados_formatados, relatorio_yara_texto, modelo, host=host, port=port
+                    dados_formatados, relatorio_yara_texto, modelo, host=host, port=port, 
+                    relatorio_yara_resultado=relatorio_yara_resultado
                 )
             except Exception as e_llm:
                 logger.error(f"Falha na análise LLM: {e_llm}. Retornando erro.")
