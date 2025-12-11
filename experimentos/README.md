@@ -69,34 +69,23 @@ Assim como nos testes anteriores:
 
 Este experimento combina os PCAPs dos malwares Neutrino e Bumblebee sem adicionar tráfego benigno, simulando um cenário com múltiplas famílias ativas simultaneamente. A união foi feita via `mergecap` para consolidar os fluxos.
 
-**Amostras do que o LLM capturou (YARA/LLM):**
-- **Neutrino_Exploit_Kit_Landing_Page** (severidade ALTA)
-- **Neutrino_EK_Encrypted_Payload** (severidade MÉDIA)
-- **Bumblebee_Core_Network_Traffic** (severidade MÉDIA)
-- **Bumblebee_Specific_IOCs** (severidade MÉDIA)
-
 Observação: por se tratar de um merge sem tráfego benigno, os padrões maliciosos aparecem com maior densidade, facilitando a identificação de beaconing, comunicação C2 e IOCs de rede nos fluxos combinados.
 
-**1. MALWARE (YARA):**  
-- **Neutrino_Exploit_Kit_Landing_Page** (severidade ALTA) em `tcp_stream_1.bin`  
-- **Neutrino_EK_Encrypted_Payload** (severidade MÉDIA) em `tcp_stream_39.bin`  
-- **Bumblebee_Core_Network_Traffic** (severidade MÉDIA) em `tcp_stream_78.bin`  
-- **Bumblebee_Specific_IOCs** (severidade MÉDIA) em `http_request_4.bin`, `http_response_4.bin`, `http_request_9.bin` (e 4 outros arquivos)  
+#### Malware (YARA)
+- **Neutrino_Exploit_Kit_Landing_Page** (severidade ALTA) em `tcp_stream_1.bin`
+- **Neutrino_EK_Encrypted_Payload** (severidade MÉDIA) em `tcp_stream_39.bin`
+- **Bumblebee_Core_Network_Traffic** (severidade MÉDIA) em `tcp_stream_78.bin`
+- **Bumblebee_Specific_IOCs** (severidade MÉDIA) em `http_request_4.bin`, `http_response_4.bin`, `http_request_9.bin` (e 4 outros arquivos)
 
----
-
-**2. ATAQUES CONFIRMADOS - LISTAR TODOS OS 4 TIPOS ABAIXO:**  
-
-🚨 **ATAQUES FLOOD (SYN/UDP/ICMP/ACK):**  
-- **ARP Flood CONFIRMADO contra 192.168.1.107:513 (porta 513) com 371 pacotes, 1 atacante, severidade MÉDIO**  
-- **ARP Flood CONFIRMADO contra 192.168.1.107:513 (porta 513) com 310 pacotes, 1 atacante, severidade MÉDIO**  
-
-🔗 **MÚLTIPLAS CONEXÕES (BOTNET):**  
-- **172.17.0.153 estabeleceu conexões para 95 destinos externos distintos, severidade ALTO**  
-
-📡 **PACOTES COM ALTA ENTROPIA (C2):**  
-- **217.23.15.230 → 192.168.1.107:51445 com entropia 7.76, severidade ALTO**  
-- **31.207.6.161 → 192.168.1.107:51451 com entropia 7.83, severidade ALTO**  
+#### Ataques confirmados (heurística)
+- **Ataques flood (SYN/UDP/ICMP/ACK):**
+  - ARP Flood CONFIRMADO contra 192.168.1.107:513 com 371 pacotes, 1 atacante, severidade MÉDIO
+  - ARP Flood CONFIRMADO contra 192.168.1.107:513 com 310 pacotes, 1 atacante, severidade MÉDIO
+- **Múltiplas conexões (botnet):**
+  - 172.17.0.153 estabeleceu conexões para 95 destinos externos distintos, severidade ALTO
+- **Pacotes com alta entropia (C2):**
+  - 217.23.15.230 → 192.168.1.107:51445 com entropia 7.76, severidade ALTO
+  - 31.207.6.161 → 192.168.1.107:51451 com entropia 7.83, severidade ALTO
 
 ## 5. Fonte das Amostras Maliciosas
 
