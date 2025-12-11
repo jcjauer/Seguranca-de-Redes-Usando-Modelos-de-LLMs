@@ -79,11 +79,6 @@ def _fetch_subprocess_models():
 def ollama_status_processor(request):
     """Injeta `ollama_status` em todos os templates com múltiplos fallbacks.
 
-    Mudanças:
-        * Cache agora é segmentado por host:port para não reutilizar estado anterior em overrides.
-        * Se há override de sessão e a tentativa HTTP falhar, NÃO cai para outros fallbacks (mostra offline real daquele host).
-        * Quando override está ativo, o cache é evitado (ou TTL mínimo) para refletir mudanças imediatas.
-
     Ordem de tentativa padrão (sem override):
         1. HTTP -> /api/tags
         2. Cliente Python

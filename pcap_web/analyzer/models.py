@@ -21,9 +21,14 @@ class PCAPAnalysis(models.Model):
     llm_model = models.CharField(max_length=100, default="llama3")
     # Optional endpoint override for the LLM service
     llm_host = models.CharField(
-        max_length=255, default="127.0.0.1", help_text="Host/IP do serviço LLM")
-    llm_port = models.IntegerField(
-        default=11434, help_text="Porta do serviço LLM")
+        max_length=255, default="127.0.0.1", help_text="Host/IP do serviço LLM"
+    )
+    llm_port = models.IntegerField(default=11434, help_text="Porta do serviço LLM")
+    analysis_mode = models.CharField(
+        max_length=20,
+        default="full",
+        help_text="Modo de análise: full, llm_heuristics, llm_yara, llm_only, yara_only"
+    )
 
     # Resultados da análise
     packet_count = models.IntegerField(null=True, blank=True)
@@ -42,9 +47,36 @@ class PCAPAnalysis(models.Model):
         ("completed", "Concluída"),
         ("error", "Erro"),
     ]
-    status = models.CharField(
-        max_length=20, choices=STATUS_CHOICES, default="pending")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
     error_message = models.TextField(null=True, blank=True)
+
+    # Campos para análise detalhada e scoring de precisão
+    malware_score = models.IntegerField(
+        null=True, blank=True, help_text="Score de probabilidade de malware (0-100)"
+    )
+    risk_level = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+        help_text="Nível de risco calculado (CRÍTICO/ALTO/MÉDIO/BAIXO)",
+    )
+    threat_indicators = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Indicadores de ameaça detectados em formato JSON",
+    )
+    network_patterns = models.JSONField(
+        null=True, blank=True, help_text="Padrões de rede identificados"
+    )
+    malware_signatures = models.JSONField(
+        null=True, blank=True, help_text="Assinaturas de malware detectadas"
+    )
+    temporal_analysis = models.JSONField(
+        null=True, blank=True, help_text="Análise temporal de comportamento"
+    )
+    threat_intelligence = models.JSONField(
+        null=True, blank=True, help_text="Correlação com threat intelligence"
+    )
 
     class Meta:
         ordering = ["-created_at"]

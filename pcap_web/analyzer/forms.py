@@ -9,12 +9,12 @@ class PCAPUploadForm(forms.Form):
     """Formulário para upload de arquivos PCAP"""
 
     pcap_file = forms.FileField(
-        label="Arquivo PCAP",
-        help_text="Selecione um arquivo .pcap ou .pcapng para análise",
+        label="Arquivo PCAP/CSV",
+        help_text="Selecione um arquivo .pcap, .pcapng ou .csv para análise",
         widget=forms.FileInput(
             attrs={
                 "class": "form-control",
-                "accept": ".pcap,.pcapng",
+                "accept": ".pcap,.pcapng,.csv",
                 "id": "pcap-file-input",
             }
         ),
@@ -40,6 +40,22 @@ class PCAPUploadForm(forms.Form):
         initial=getattr(settings, 'DEFAULT_LLM_PORT', 11434),
         widget=forms.NumberInput(
             attrs={"class": "form-control", "placeholder": "11434"}),
+    )
+
+    analysis_mode = forms.ChoiceField(
+        label="Modo de Análise",
+        required=False,
+        choices=[
+            ("full", "🔬 Completo (YARA + LLM + Heurísticas) - Recomendado"),
+            ("llm_heuristics", "🧠 LLM + Heurísticas (sem YARA)"),
+            ("llm_yara", "🤖 LLM + YARA (sem detecções heurísticas)"),
+            ("llm_only", "💬 Apenas LLM (análise básica de pacotes)"),
+            ("yara_only", "🔍 Apenas YARA (sem análise LLM)"),
+        ],
+        initial="full",
+        help_text="Escolha o nível de análise. Use modos simplificados para testar componentes individualmente.",
+        widget=forms.Select(
+            attrs={"class": "form-control", "id": "analysis-mode-select"}),
     )
 
     def __init__(self, *args, request=None, ollama_status=None, **kwargs):
@@ -78,21 +94,22 @@ class PCAPUploadForm(forms.Form):
         self.fields['llm_port'].initial = session_port or default_port
 
     def clean_pcap_file(self):
-        """Validação do arquivo PCAP"""
+        """Validação do arquivo PCAP/CSV"""
         file = self.cleaned_data["pcap_file"]
 
         # Verificar extensão
-        valid_extensions = [".pcap", ".pcapng", ".cap"]
+        valid_extensions = [".pcap", ".pcapng", ".cap", ".csv"]
         if not any(file.name.lower().endswith(ext) for ext in valid_extensions):
             raise forms.ValidationError(
-                "Arquivo deve ter extensão .pcap, .pcapng ou .cap"
+                "Arquivo deve ter extensão .pcap, .pcapng, .cap ou .csv"
             )
 
-        # Verificar tamanho (máximo 50MB)
-        max_size = 50 * 1024 * 1024  # 50MB
+        # Verificar tamanho (máximo 50MB para PCAP, 100MB para CSV)
+        is_csv = file.name.lower().endswith('.csv')
+        max_size = 100 * 1024 * 1024 if is_csv else 50 * 1024 * 1024  # 100MB CSV, 50MB PCAP
         if file.size > max_size:
             raise forms.ValidationError(
-                f"Arquivo muito grande. Tamanho máximo: 50MB. "
+                f"Arquivo muito grande. Tamanho máximo: {max_size/(1024*1024):.0f}MB. "
                 f"Tamanho atual: {file.size / (1024*1024):.1f}MB"
             )
 
