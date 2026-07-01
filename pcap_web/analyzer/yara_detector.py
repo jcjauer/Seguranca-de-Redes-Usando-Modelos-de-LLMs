@@ -100,6 +100,7 @@ YARA_RULES = None
 YARA_ENABLED = False
 YARA_CACHE_FILE = None
 YARA_CACHE_TIMESTAMP = None
+YARA_RULESET_VERSION = time.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def carregar_regras_yara_com_cache():
@@ -602,7 +603,11 @@ def gerar_relatorio_yara_melhorado(deteccoes_yara):
         return {
             "status": "limpo",
             "total_deteccoes": 0,
-            "relatorio_texto": "✅ Nenhuma detecção YARA encontrada nos arquivos extraídos.",
+            "ruleset_version": YARA_RULESET_VERSION,
+            "relatorio_texto": (
+                f"🧬 VERSÃO DO RULESET YARA: {YARA_RULESET_VERSION}\n"
+                "✅ Nenhuma detecção YARA encontrada nos arquivos extraídos."
+            ),
             "deteccoes": [],
             "severidade_maxima": "NENHUMA",
         }
@@ -634,6 +639,7 @@ def gerar_relatorio_yara_melhorado(deteccoes_yara):
     emoji_severidade = {"CRÍTICA": "🚨", "ALTA": "⚠️", "MÉDIA": "⚡", "BAIXA": "💡"}
 
     relatorio_texto = (
+        f"🧬 VERSÃO DO RULESET YARA: {YARA_RULESET_VERSION}\n"
         f"🚨 RELATÓRIO YARA AVANÇADO - {len(deteccoes_yara)} DETECÇÕES:\n\n"
     )
 
@@ -699,6 +705,7 @@ def gerar_relatorio_yara_melhorado(deteccoes_yara):
 
     return {
         "status": "infectado",
+        "ruleset_version": YARA_RULESET_VERSION,
         "severidade_maxima": severidade_maxima,
         "total_deteccoes": len(deteccoes_yara),
         "regras_ativadas": len(deteccoes_por_regra),
@@ -792,7 +799,11 @@ def executar_analise_yara_completa(arquivo_pcap):
                 return {
                     "status": "sem_arquivos",
                     "total_deteccoes": 0,
-                    "relatorio_texto": "⚠️ Nenhum arquivo foi extraído do PCAP para análise YARA",
+                    "ruleset_version": YARA_RULESET_VERSION,
+                    "relatorio_texto": (
+                        f"🧬 VERSÃO DO RULESET YARA: {YARA_RULESET_VERSION}\n"
+                        "⚠️ Nenhum arquivo foi extraído do PCAP para análise YARA"
+                    ),
                 }
 
             # 5. Analisar com YARA (versão melhorada)
@@ -802,6 +813,7 @@ def executar_analise_yara_completa(arquivo_pcap):
             relatorio = gerar_relatorio_yara_melhorado(deteccoes)
             relatorio["arquivos_extraidos"] = len(todos_arquivos)
             relatorio["pasta_extracao"] = "temporaria_removida_automaticamente"
+            relatorio["ruleset_version"] = YARA_RULESET_VERSION
 
             print(f"[YARA] ✅ Análise completa finalizada: {len(deteccoes)} detecções")
             print("[YARA] 🗑️ Pasta temporária será removida automaticamente")
@@ -814,7 +826,8 @@ def executar_analise_yara_completa(arquivo_pcap):
         return {
             "status": "erro",
             "erro": str(e),
-            "relatorio_texto": f"❌ Erro durante análise YARA: {str(e)}",
+            "ruleset_version": YARA_RULESET_VERSION,
+            "relatorio_texto": f"🧬 VERSÃO DO RULESET YARA: {YARA_RULESET_VERSION}\n❌ Erro durante análise YARA: {str(e)}",
         }
 
 

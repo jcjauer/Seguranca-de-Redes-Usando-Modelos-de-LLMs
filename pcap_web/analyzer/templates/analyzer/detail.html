@@ -27,14 +27,6 @@
 {% block extra_css %}
 <style>
 /* Responsive layout that adapts automatically when --sidebar-width changes */
-@media (min-width: 768px) {
-    /* Make the inner container span the remaining viewport width (depends on --sidebar-width set in base) */
-    .main-content .container-fluid {
-        max-width: none;
-        width: calc(100vw - var(--sidebar-width) - 3rem);
-        padding-left: 1rem; /* small horizontal margin */
-        padding-right: 1rem; /* small horizontal margin */
-        box-sizing: border-box;
         transition: width .18s ease;
     }
 
@@ -87,6 +79,14 @@
                             <tr>
                                 <td><strong>Modelo LLM:</strong></td>
                                 <td><span class="badge bg-secondary">{{ analysis.llm_model }}</span></td>
+                            </tr>
+                            <tr>
+                                <td><strong>Data/hora da análise:</strong></td>
+                                <td>
+                                    <span class="badge bg-dark">
+                                        {{ analysis.threat_intelligence.analysis_timestamp|default:"-" }}
+                                    </span>
+                                </td>
                             </tr>
                         </table>
                     </div>

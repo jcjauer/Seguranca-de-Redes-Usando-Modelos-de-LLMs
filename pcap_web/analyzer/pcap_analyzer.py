@@ -14,6 +14,7 @@ import sys
 import logging
 import struct
 import csv
+from uuid import uuid4
 from collections import defaultdict
 from datetime import datetime
 
@@ -46,6 +47,7 @@ try:
     from .utils import get_ollama_models as get_ollama_models_subprocess
     from .yara_detector import (
         executar_analise_yara_completa,
+        YARA_RULESET_VERSION as YARA_RULESET_VERSION_SUBPROCESS,
     )  # INTEGRAÇÃO COM MÓDULO YARA
 except ImportError:
     # Fallback quando executado diretamente
@@ -61,6 +63,11 @@ except ImportError:
             "status": "erro",
             "relatorio_texto": "❌ Módulo YARA não disponível (modo standalone)",
         }
+
+    YARA_RULESET_VERSION_SUBPROCESS = "desconhecida"
+
+
+ANALYSIS_PIPELINE_VERSION = "2026.05.05-analysis-v2"
 
 
 ################################################################################
@@ -2024,6 +2031,9 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None, a
     - 'yara_only': Apenas análise YARA (sem LLM)
     """
     try:
+        analysis_run_id = str(uuid4())
+        analysis_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         # Detectar tipo de arquivo
         arquivo_lower = arquivo_pcap.lower()
         is_csv = arquivo_lower.endswith('.csv')
@@ -2089,7 +2099,7 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None, a
             if is_csv:
                 logger.warning("⚠️ Arquivos CSV não suportam análise YARA (sem payload). Análise apenas comportamental.")
                 relatorio_yara_texto = "⚠️ Análise YARA não aplicável para arquivos CSV (sem payload binário)"
-                relatorio_yara_resultado = {"total_deteccoes": 0, "arquivos_extraidos": 0}
+                relatorio_yara_resultado = {"total_deteccoes": 0, "arquivos_extraidos": 0, "ruleset_version": YARA_RULESET_VERSION_SUBPROCESS}
             else:
                 try:
                     relatorio_yara_resultado = executar_analise_yara_completa(arquivo_pcap)
@@ -2098,12 +2108,12 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None, a
                     )
                 except Exception as e:
                     logger.warning(f"⚠️ Análise YARA falhou: {e}")
-                    relatorio_yara_resultado = {"total_deteccoes": 0, "arquivos_extraidos": 0}
+                    relatorio_yara_resultado = {"total_deteccoes": 0, "arquivos_extraidos": 0, "ruleset_version": YARA_RULESET_VERSION_SUBPROCESS}
                     relatorio_yara_texto = "❌ Análise YARA não disponível"
         else:
             logger.info(f"⏭️ Modo '{analysis_mode}': Pulando análise YARA")
             relatorio_yara_texto = f"⚠️ Análise YARA desativada (modo: {analysis_mode})"
-            relatorio_yara_resultado = {"total_deteccoes": 0, "arquivos_extraidos": 0}
+            relatorio_yara_resultado = {"total_deteccoes": 0, "arquivos_extraidos": 0, "ruleset_version": YARA_RULESET_VERSION_SUBPROCESS}
         
         # Extrair assinaturas detectadas pelo YARA para o painel
         malware_signatures = {}
@@ -2145,6 +2155,11 @@ def analyze_pcap_with_llm(arquivo_pcap, modelo="llama3", host=None, port=None, a
             # Atualizar score (máximo 100)
             scoring_result["score"] = min(scoring_result["score"] + yara_score_adicional, 100)
             scoring_result["nivel_risco"] = get_risk_level(scoring_result["score"])
+
+        yara_ruleset_version = analysis_timestamp
+        version_banner = (
+            f"🕒 DATA/HORA DA ANÁLISE: {analysis_timestamp}\n\n"
+        )
 
         # Adicionar contexto avançado para o LLM (sem assinaturas)
         contexto_avancado = f"""
@@ -2188,11 +2203,15 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
             logger.info(f"⏭️ Modo '{analysis_mode}': Análise LLM desativada")
             analise_llm = f"📊 MODO: {analysis_mode.upper()}\n\n{relatorio_yara_texto}"
 
+        analise_llm = version_banner + analise_llm
+
         # FASE 10: RESULTADO FINAL COMBINADO
         total_deteccoes_yara = relatorio_yara_resultado.get("total_deteccoes", 0)
         arquivos_extraidos = relatorio_yara_resultado.get("arquivos_extraidos", 0)
 
         resumo = f"""
+    🕒 DATA/HORA DA ANÁLISE: {analysis_timestamp}
+
 📋 ANÁLISE COMPLETA FINALIZADA
 ├─ Pacotes analisados: {len(dados_pacotes)}
 ├─ Score de malware: {scoring_result.get('score', 0)}/100 ({scoring_result.get('nivel_risco', 'MÍNIMO')})
@@ -2220,6 +2239,10 @@ Por favor, analise estes dados considerando o contexto de segurança avançado f
             "analysis_text": analise_llm,
             "summary": resumo,
             "raw_data": dados_formatados,
+            "analysis_run_id": analysis_run_id,
+            "analysis_version": ANALYSIS_PIPELINE_VERSION,
+            "analysis_timestamp": analysis_timestamp,
+            "yara_ruleset_version": yara_ruleset_version,
             "malware_score": scoring_result.get("score", 0),
             "risk_level": scoring_result.get("nivel_risco", "MÍNIMO"),
             "network_patterns": network_patterns,

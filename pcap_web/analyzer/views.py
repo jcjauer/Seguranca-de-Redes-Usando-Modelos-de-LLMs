@@ -7,6 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.core.files.storage import default_storage
 from django.conf import settings
+from django.utils import timezone
 import json
 import os
 import time
@@ -178,6 +179,16 @@ def process_pcap_analysis(analysis_id, host=None, port=None):
         analysis.malware_signatures = result.get("malware_signatures", {})
         analysis.temporal_analysis = result.get("temporal_analysis", {})
         analysis.threat_intelligence = result.get("threat_intelligence", {})
+        if isinstance(analysis.threat_intelligence, dict):
+            analysis.threat_intelligence.update(
+                {
+                    "analysis_run_id": result.get("analysis_run_id"),
+                    "analysis_version": result.get("analysis_version"),
+                    "analysis_timestamp": result.get("analysis_timestamp"),
+                    "yara_ruleset_version": result.get("yara_ruleset_version"),
+                    "generated_at": timezone.now().isoformat(),
+                }
+            )
 
         analysis.status = "completed"
         analysis.save()
